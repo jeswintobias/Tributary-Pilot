@@ -66,10 +66,20 @@ require_tools() {
 # to the commit we tested. Nothing from upstream is copied into this repository.
 ensure_upstream() {
   if [ ! -d "${DRUNIX_DIR}/.git" ]; then
-    log "cloning upstream DRUNIX into ${DRUNIX_DIR} (outside the repo, never vendored)"
-    mkdir -p "$(dirname "${DRUNIX_DIR}")"
-    git clone "${DRUNIX_REPO}" "${DRUNIX_DIR}"
-    git -C "${DRUNIX_DIR}" checkout --quiet "${DRUNIX_REF}"
+    log "fetching upstream DRUNIX into ${DRUNIX_DIR} (outside the repo, never vendored)"
+    assert_no_spaces "${DRUNIX_DIR}" "the DRUNIX checkout path"
+    mkdir -p "${DRUNIX_DIR}"
+    git -C "${DRUNIX_DIR}" init --quiet
+    git -C "${DRUNIX_DIR}" remote add origin "${DRUNIX_REPO}"
+    # Fetch the pinned commit directly at depth 1. This is both faster than a
+    # full clone of a Fabric fork and exact: there is no default branch to drift
+    # underneath us. Falls back to a shallow clone of the default branch if the
+    # server refuses a by-SHA fetch.
+    if ! git -C "${DRUNIX_DIR}" fetch --quiet --depth 1 origin "${DRUNIX_REF}"; then
+      warn "server refused a fetch by commit; falling back to the default branch"
+      git -C "${DRUNIX_DIR}" fetch --quiet --depth 1 origin HEAD
+    fi
+    git -C "${DRUNIX_DIR}" checkout --quiet FETCH_HEAD
   fi
   [ -f "${TEST_NETWORK_DIR}/network.sh" ] || die "upstream test network not found at ${TEST_NETWORK_DIR}"
 

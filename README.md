@@ -179,6 +179,12 @@ tributary-pilot/
 └── tests/         adversarial/ and benchmark/ (Caliper)
 ```
 
+The Phase 1 directories are placeholders today. There is deliberately **no
+root `docker-compose.yml`**: in Phase 0 nothing of ours runs in a container —
+the network comes from upstream's own compose files, which `network/up.sh`
+drives and which we do not modify. It arrives with the Phase 1 services, rather
+than as an empty file pretending otherwise.
+
 ## Engineering rules we hold ourselves to
 
 - **Honesty first.** Nothing is claimed to work unless a test or a script proves

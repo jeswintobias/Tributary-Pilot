@@ -6,8 +6,10 @@ scripts.
 
 ## Where upstream lives
 
-`up.sh` clones DRUNIX to `~/.tributary-pilot/drunix` and pins it to the commit
-this repository has been tested against:
+`up.sh` fetches DRUNIX into `~/.tributary-pilot/drunix` at the exact commit this
+repository has been tested against — a depth-1 fetch of that SHA rather than a
+clone of a Fabric fork's whole history, so there is no default branch to drift
+underneath us:
 
 | | |
 |---|---|
@@ -103,8 +105,8 @@ fails. Our scripts always ask for index 0.
 ./network/down.sh                    # tear down and clean up
 ```
 
-First run does a shallow clone and a full Go build of eight binaries, so give it
-time. Subsequent runs skip both.
+First run does a depth-1 fetch of the pinned commit and a full Go build of eight
+binaries, so give it time. Subsequent runs skip both.
 
 ### Endorsement policy
 
