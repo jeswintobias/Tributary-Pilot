@@ -49,8 +49,8 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — 2PC state machine | **In progress** | — |
-| P0.4a | Go unit tests with mock stub | **In progress** | — |
+| P0.3 | Settlement chaincode (Go) — 2PC state machine | **Done** | 26 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with mock stub | **Done** | 26 tests passing, 76.3% statement coverage |
 | P0.2 | DRUNIX test network bring-up scripts | **In progress** | — |
 | P0.4b | Live happy-path and abort-path scripts | **Planned** | — |
 | P0.5 | Synthetic corridor data generator | **Planned** | — |

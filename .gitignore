@@ -1,0 +1,16 @@
+# Go
+*.test
+*.out
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# DRUNIX upstream, cloned alongside and never vendored
+/network/.drunix/
+/network/.env
+
+# macOS
+.DS_Store
