@@ -67,6 +67,15 @@ None will until it is measured, and it cannot be measured honestly here: DRUNIX
 publishes `linux/amd64` images only, so on this Apple-silicon machine every
 container runs emulated. Benchmarking belongs on amd64 Linux with Caliper.
 
+### Evidence page
+
+[`docs/evidence/index.html`](docs/evidence/index.html) presents the captured output
+of the verification runs — the settlement lifecycle, the balance movements, the two
+access-control refusals and the modelled forecast figures — in one page, with a
+section stating what it does not show. Open the file in a browser; it is a single
+self-contained page with no build step. Every figure on it is copied from a logged
+run, not illustrated.
+
 ### What the live network has and has not shown
 
 Shown, and reproducible with the scripts above:
