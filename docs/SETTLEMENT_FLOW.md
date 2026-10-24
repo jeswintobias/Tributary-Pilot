@@ -17,7 +17,8 @@ and delivery-versus-delivery (DvD) for tokenised claims.
 
 | Phase | Call | What happens | Resulting state |
 |---|---|---|---|
-| Capture / accept | `CreateTransfer` | Transfer recorded with both legs, the FX quote ID and an expiry. Nothing is locked, nothing has moved. | `CAPTURED` |
+| Capture | `CreateTransfer` | Transfer recorded with both legs, the FX quote ID and an expiry. Nothing is locked, nothing has moved. | `CAPTURED` |
+| Accept | `Accept` | The payout organisation agrees to the terms. Callable **only** by the payout org. Still nothing locked. | `ACCEPTED` |
 | Prepare | `Prepare` | Both legs are locked against the payer balances. A proof hash over the transfer's canonical fields is anchored. | `PREPARED` |
 | Commit | `Commit` | Guards re-checked, locks consumed, both legs move in one transaction. | `SETTLED` |
 | Abort | `Abort` | Locks released, balances restored. Callable by either party on failure, or by anyone once expired. | `ABORTED` |
@@ -32,10 +33,12 @@ in place for Phase 1 to carry a real counterparty proof.
 ```mermaid
 stateDiagram-v2
     [*] --> CAPTURED: CreateTransfer
-    CAPTURED --> PREPARED: Prepare<br/>(funds locked, proof anchored)
+    CAPTURED --> ACCEPTED: Accept<br/>(payout org only)
+    ACCEPTED --> PREPARED: Prepare<br/>(funds locked, proof anchored)
     CAPTURED --> ABORTED: Abort
+    ACCEPTED --> ABORTED: Abort
     PREPARED --> SETTLED: Commit<br/>(not expired, both orgs endorse)
-    PREPARED --> ABORTED: Abort<br/>(failure, or expiry reached)
+    PREPARED --> ABORTED: Abort<br/>(expiry reached)
     SETTLED --> [*]
     ABORTED --> [*]
 
@@ -50,8 +53,16 @@ stateDiagram-v2
     end note
 ```
 
-Every other edge is rejected. In particular `CAPTURED → SETTLED` is **not** an
-edge: committing without preparing fails, and there is a unit test that proves it.
+Every other edge is rejected, and two absences are deliberate:
+
+- **`CAPTURED → SETTLED`** is not an edge. Committing without preparing would move
+  a leg that was never locked, and a unit test proves it fails.
+- **`CAPTURED → PREPARED`** is not an edge either. `Prepare` locks *both* parties'
+  funds, so without an explicit `Accept` the sending organisation could tie up the
+  payout bank's liquidity on its own. This was a real defect found in review: the
+  sender could create a transfer with a far-future expiry, prepare it alone, and
+  the payout bank could not abort until that expiry passed. `Accept` plus the
+  bounded window in §6 closes it.
 
 ## 4. Sequence
 
@@ -108,9 +119,13 @@ Each of these is a rejection path with a named unit test behind it.
 | `Prepare` with insufficient available balance | A lock must be fully funded or not taken at all |
 | `Commit` submitted by an org that is not a party | Only `SenderOrg` and `PayoutBankOrg` may settle their own transfer |
 | `Commit` endorsed by only one org | Endorsement policy requires `SenderOrg AND PayoutBankOrg` |
+| `Prepare` before `Accept` | The payout org's funds cannot be locked without its agreement |
+| `Accept` by anyone but the payout org | Only the counterparty can consent on its own behalf |
+| `expiresAt` further ahead than the settlement window | An unbounded lock is a denial-of-service on the counterparty's liquidity |
+| A beneficiary reference equal to either party's MSP ID | A leg that pays its own account is meaningless, and exposed a read-your-writes defect |
 | Non-positive or non-integer leg amounts | Money is integer minor units; zero and negative legs are meaningless |
 
-## 6. Expiry and the clock
+## 6. Expiry, the clock, and the settlement window
 
 Expiry is compared against `stub.GetTxTimestamp()`, which is the timestamp in the
 transaction proposal and is therefore identical on every endorsing peer. Using
@@ -118,7 +133,37 @@ transaction proposal and is therefore identical on every endorsing peer. Using
 transaction would fail validation non-deterministically. `expiresAt` is supplied by
 the client as a Unix second and is itself bounded by the FX quote's own expiry.
 
-## 7. Locks and balances
+It is also bounded by the contract: `expiresAt` may be no more than
+`MaxSettlementWindowSeconds` (900, fifteen minutes) past the transaction
+timestamp. A prepared transfer can only be aborted once it has expired, so an
+unbounded expiry would let a sender hold the counterparty's funds for as long as
+it liked. Fifteen minutes is the lifetime of a signed FX quote, which is the real
+limit on how long a transfer's terms stay meaningful.
+
+## 7. Reading your own writes
+
+Fabric does not give chaincode read-your-writes semantics. `SetState` appends to
+the transaction's write set (`txSimulator.SetState` →
+`rwsetBuilder.AddToWriteSet`), while `GetState` reads the state database directly
+(`queryExecutor.getState` → `txmgr.db.GetState`) and never consults it. A second
+read of a key this transaction has already written returns the **pre-transaction**
+value.
+
+That matters here because `Commit` moves two legs, and the two legs can touch the
+same account and currency — when both legs are in the same currency, or when the
+beneficiary reference names a party. An earlier version read each balance
+straight from state, so the second write silently discarded the first: value was
+created when an account paid itself, and destroyed when a credit was followed by a
+debit.
+
+Every balance operation in one invocation therefore goes through a single
+`balanceBook`, which caches what the transaction has already written so later
+reads within that transaction see it. The mock stub used in tests reproduces
+Fabric's semantics exactly — buffered writes, invisible to `GetState`, discarded
+when the call returns an error — so this class of bug fails the tests rather than
+hiding behind a too-permissive mock.
+
+## 8. Locks and balances
 
 Phase 0 keeps a minimal balance map inside the settlement contract: per org, per
 currency, a `total` and a `locked` amount, both in minor units. Available balance
@@ -133,8 +178,8 @@ The invariant `0 <= locked <= total` holds after every operation. Phase 1 replac
 this map with the `token` and `pool` contracts; the state machine above does not
 change when it does.
 
-## 8. Events
+## 9. Events
 
-`CreateTransfer`, `Prepare`, `Commit` and `Abort` each emit a chaincode event
+`CreateTransfer`, `Accept`, `Prepare`, `Commit` and `Abort` each emit a chaincode event
 carrying the transfer ID, the new state and the leg amounts. Phase 1's event
 listener drives the payout adapter and the treasury dashboard from these.

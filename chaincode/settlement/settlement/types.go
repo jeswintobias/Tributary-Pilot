@@ -13,23 +13,37 @@ package settlement
 //
 // The only permitted transitions are:
 //
-//	CAPTURED -> PREPARED -> SETTLED
+//	CAPTURED -> ACCEPTED -> PREPARED -> SETTLED
 //	CAPTURED -> ABORTED
+//	ACCEPTED -> ABORTED
 //	PREPARED -> ABORTED
 //
-// Notably CAPTURED -> SETTLED is not a transition: committing without preparing
-// would move a leg that was never locked.
+// Two transitions are deliberately absent. CAPTURED -> SETTLED would commit a
+// leg that was never locked. CAPTURED -> PREPARED would let the sending
+// organisation lock the payout organisation's funds without its agreement, so
+// an explicit Accept by the payout organisation stands between them.
 const (
 	StateCaptured = "CAPTURED"
+	StateAccepted = "ACCEPTED"
 	StatePrepared = "PREPARED"
 	StateSettled  = "SETTLED"
 	StateAborted  = "ABORTED"
 )
 
+// MaxSettlementWindowSeconds bounds how far ahead a transfer may expire.
+//
+// Without an upper bound, a sending organisation could create a transfer
+// expiring years from now and — once accepted — lock the counterparty's funds
+// for that whole period, because a prepared transfer can only be aborted after
+// it expires. Fifteen minutes matches the lifetime of a signed FX quote, which
+// is the real constraint on how long a transfer's terms stay meaningful.
+const MaxSettlementWindowSeconds int64 = 900
+
 // Event names emitted on each state change. Phase 1's event listener drives the
 // payout adapter and the treasury dashboard from these.
 const (
 	EventCaptured = "TransferCaptured"
+	EventAccepted = "TransferAccepted"
 	EventPrepared = "TransferPrepared"
 	EventSettled  = "TransferSettled"
 	EventAborted  = "TransferAborted"
@@ -72,6 +86,7 @@ type Transfer struct {
 	ProofHash string `json:"proofHash"`
 
 	CreatedAt  int64 `json:"createdAt"`
+	AcceptedAt int64 `json:"acceptedAt"`
 	PreparedAt int64 `json:"preparedAt"`
 	ResolvedAt int64 `json:"resolvedAt"` // set when SETTLED or ABORTED
 }

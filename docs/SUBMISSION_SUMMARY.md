@@ -6,18 +6,20 @@ this repository that a reviewer can run.
 ---
 
 Tributary Pilot runs on NPCI's DRUNIX today: a two-phase-commit settlement
-chaincode in Go, deployed to a live three-org test network — SenderOrg,
-PayoutBankOrg and PlatformOrg as regulator observer — under an
+chaincode in Go following NPCI's capture → accept → prepare → commit flow,
+deployed to a live three-org test network — SenderOrg, PayoutBankOrg and
+PlatformOrg as regulator observer — under an
 `AND(SenderOrg, PayoutBankOrg)` endorsement policy, where a remittance's
 foreign-currency leg and its INR payout leg move atomically in one transaction —
 or neither does.
 
-Correctness is demonstrated, not asserted: 26 Go unit tests (76% statement
+Correctness is demonstrated, not asserted: 39 Go unit tests (77.5% statement
 coverage) cover commit-without-prepare, commit-after-expiry, replayed transfer
 IDs, double-spend via a second prepare, non-party callers and integer exactness
 at 2^53+1; on the live network, a `Commit` endorsed by only one organisation
-leaves the transfer `PREPARED`, and PlatformOrg — a full channel member — is
-refused `Commit`, `Abort` and `Prepare` on a transfer it is not a party to while
+leaves the transfer `PREPARED`, a sender that tries to `Prepare` before the
+payout bank has accepted is refused, and PlatformOrg — a full channel member —
+is refused every state-changing call on a transfer it is not a party to while
 still being able to read it.
 
 Money is held in integer minor units throughout, with no floating-point amount
@@ -41,10 +43,11 @@ precisely what works today and what does not.
 
 > Tributary Pilot settles cross-border remittances atomically on NPCI's DRUNIX.
 > A Go two-phase-commit chaincode is deployed to a live test network under an
-> `AND(SenderOrg, PayoutBankOrg)` endorsement policy: both legs of a transfer
-> move in one transaction or neither does. On the live network a single-org
-> commit is refused, and a third org that is not a party to a transfer is
-> refused too while still able to read it. 26 unit tests at 76% coverage;
+> `AND(SenderOrg, PayoutBankOrg)` endorsement policy, following NPCI's capture →
+> accept → prepare → commit flow: both legs move in one transaction or neither
+> does. On the live network a single-org commit is refused, a sender cannot lock
+> the payout bank's funds before it accepts, and a third org that is not a party
+> is refused while still able to read. 39 unit tests at 77.5% coverage;
 > money is integer minor units and no PII touches the ledger. The AI agent's
 > quantile forecaster is built, and on synthetic data a shared netted pool needs
 > 37% less buffer than separate ones at matched risk — a modelled estimate, not a

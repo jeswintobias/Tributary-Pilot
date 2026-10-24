@@ -19,6 +19,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 CC_NAME="${CC_NAME:-settlement}"
 STAMP="$(date +%s)"
 
+# A salted hash of the beneficiary reference, computed off-chain. No personally
+# identifying information reaches the ledger. Defined here because every section
+# below uses it.
+PAYEE="sha256:collegefeespayeeref0000000000000000"
+
 configure_platform
 require_tools
 ensure_upstream
@@ -103,15 +108,52 @@ echo "SenderOrg AED:"     && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
 echo "PayoutBankOrg INR:" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
 
 # ---------------------------------------------------------------------------
+step "T2.5 — the sender alone cannot lock the payout bank's funds"
+# ---------------------------------------------------------------------------
+# Prepare before Accept must be refused. Until the payout org agrees, the
+# sending org cannot tie up its liquidity.
+GRIEF="TP-GRIEF-${STAMP}"
+GRIEF_EXPIRY=$(( $(date +%s) + 900 ))
+invoke 1 "{\"Args\":[\"CreateTransfer\",\"${GRIEF}\",\"100\",\"AED\",\"3000000\",\"INR\",\"quote-grief-${STAMP}\",\"${GRIEF_EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+setGlobals 1 "${LITE_PEER}"
+# Capture the output rather than piping it: under `set -o pipefail` a pipeline
+# takes peer's non-zero exit status even when grep matches, so `if ... | grep`
+# would report a correct refusal as a failure.
+set +e
+grief_out="$(peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
+  --tls --cafile "${ORDERER_CA}" -C "${CHANNEL_NAME}" -n "${CC_NAME}" \
+  "${BOTH_PEERS[@]}" -c "{\"Args\":[\"Prepare\",\"${GRIEF}\"]}" 2>&1)"
+grief_rc=$?
+set -e
+
+if [ ${grief_rc} -eq 0 ]; then
+  printf '%s\n' "${grief_out}" >&2
+  die "sender was ALLOWED to Prepare without the payout org accepting"
+fi
+if printf '%s' "${grief_out}" | grep -q "Prepare requires ACCEPTED"; then
+  printf '\033[1;32mOK: Prepare before Accept refused — payout bank funds cannot be locked unilaterally\033[0m\n'
+else
+  printf '%s\n' "${grief_out}" >&2
+  die "Prepare was refused, but not by the Accept guard — see output above"
+fi
+echo "PayoutBankOrg INR (expect locked 0):" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
+
+# ---------------------------------------------------------------------------
 step "HAPPY PATH — Ravi sends 2,200 AED; 30,000 INR to the college"
 # ---------------------------------------------------------------------------
 HAPPY="TP-HAPPY-${STAMP}"
-PAYEE="sha256:collegefeespayeeref0000000000000000"
-EXPIRY=$(( $(date +%s) + 1800 ))
+# The contract caps expiry at MaxSettlementWindowSeconds (900s), which matches
+# the lifetime of a signed FX quote.
+EXPIRY=$(( $(date +%s) + 900 ))
 
 # 2,200 AED = 220000 fils. 30,000 INR = 3000000 paise.
 invoke 1 "{\"Args\":[\"CreateTransfer\",\"${HAPPY}\",\"220000\",\"AED\",\"3000000\",\"INR\",\"quote-${STAMP}\",\"${EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
 echo "after CreateTransfer:" && query 1 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
+
+# The payout bank agrees to the terms before any of its funds can be locked.
+# Without this the sender alone could lock the bank's liquidity.
+invoke 2 "{\"Args\":[\"Accept\",\"${HAPPY}\"]}"
+echo "after Accept:" && query 2 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
 
 invoke 1 "{\"Args\":[\"Prepare\",\"${HAPPY}\"]}"
 echo "after Prepare:" && query 1 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
@@ -159,6 +201,7 @@ ABORT="TP-ABORT-${STAMP}"
 SHORT_EXPIRY=$(( $(date +%s) + 120 ))
 
 invoke 1 "{\"Args\":[\"CreateTransfer\",\"${ABORT}\",\"110000\",\"AED\",\"1500000\",\"INR\",\"quote-abort-${STAMP}\",\"${SHORT_EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 2 "{\"Args\":[\"Accept\",\"${ABORT}\"]}"
 invoke 1 "{\"Args\":[\"Prepare\",\"${ABORT}\"]}"
 echo "locked while PREPARED:" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
 

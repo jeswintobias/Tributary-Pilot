@@ -47,23 +47,17 @@ func (s *SmartContract) CreateTransfer(
 	payoutOrg string,
 	payoutPayeeRef string,
 ) error {
-	if err := requireNonEmpty("transferID", transferID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("senderCcy", senderCcy); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("payoutCcy", payoutCcy); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("quoteID", quoteID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("payoutOrg", payoutOrg); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("payoutPayeeRef", payoutPayeeRef); err != nil {
-		return err
+	for _, f := range []struct{ name, value string }{
+		{"transferID", transferID},
+		{"senderCcy", senderCcy},
+		{"payoutCcy", payoutCcy},
+		{"quoteID", quoteID},
+		{"payoutOrg", payoutOrg},
+		{"payoutPayeeRef", payoutPayeeRef},
+	} {
+		if err := requireNonEmpty(f.name, f.value); err != nil {
+			return err
+		}
 	}
 	// Zero legs are meaningless and would let a caller settle nothing while
 	// occupying a transfer ID. Negative amounts cannot be expressed: the
@@ -82,6 +76,14 @@ func (s *SmartContract) CreateTransfer(
 	}
 	if senderOrg == payoutOrg {
 		return fmt.Errorf("senderOrg and payoutOrg must differ, both are %q", senderOrg)
+	}
+	// The beneficiary is an external payee, never one of the settling
+	// institutions. Allowing an institution to name itself produces a leg that
+	// pays its own account, which is economically meaningless and was the shape
+	// that exposed a read-your-writes defect in an earlier version of Commit.
+	if payoutPayeeRef == senderOrg || payoutPayeeRef == payoutOrg {
+		return fmt.Errorf(
+			"payoutPayeeRef %q must not be a party to the transfer", payoutPayeeRef)
 	}
 
 	key, err := transferKey(ctx, transferID)
@@ -102,6 +104,14 @@ func (s *SmartContract) CreateTransfer(
 	}
 	if expiresAt <= now {
 		return fmt.Errorf("expiresAt %d is not in the future (tx time %d)", expiresAt, now)
+	}
+	// An unbounded expiry would let an accepted transfer hold the counterparty's
+	// funds indefinitely, since a prepared transfer can only be aborted once it
+	// has expired.
+	if expiresAt > now+MaxSettlementWindowSeconds {
+		return fmt.Errorf(
+			"expiresAt %d is more than %d seconds ahead (tx time %d)",
+			expiresAt, MaxSettlementWindowSeconds, now)
 	}
 
 	t := Transfer{
@@ -125,25 +135,33 @@ func (s *SmartContract) CreateTransfer(
 }
 
 // ---------------------------------------------------------------------------
-// Prepare
+// Accept
 // ---------------------------------------------------------------------------
 
-// Prepare locks both legs against their payers' available balances and anchors a
-// proof hash over the transfer's canonical fields.
+// Accept records the payout organisation's agreement to the transfer's terms,
+// moving it from CAPTURED to ACCEPTED. Only the payout org may call it.
 //
-// A lock is taken in full or not at all. Available balance is Total - Locked, so
-// a second transfer cannot be prepared against funds an earlier one already
-// holds — that is what stops a double-spend.
-func (s *SmartContract) Prepare(ctx contractapi.TransactionContextInterface, transferID string) error {
+// This is the "accept" half of NPCI's capture/accept phase, and it closes a
+// griefing vector: without it the sending organisation alone could create a
+// transfer and prepare it, locking the payout organisation's funds for the whole
+// settlement window against its will. Nothing is locked here — acceptance is
+// consent to the terms, not a transfer of value.
+func (s *SmartContract) Accept(ctx contractapi.TransactionContextInterface, transferID string) error {
 	key, t, err := loadTransfer(ctx, transferID)
 	if err != nil {
 		return err
 	}
-	if err := requireParty(ctx, t); err != nil {
+	mspID, err := callerMSPID(ctx)
+	if err != nil {
 		return err
 	}
+	if mspID != t.PayoutOrg {
+		return fmt.Errorf(
+			"only the payout org %s may accept transfer %q, caller is %s",
+			t.PayoutOrg, transferID, mspID)
+	}
 	if t.State != StateCaptured {
-		return fmt.Errorf("transfer %q is %s, Prepare requires %s", transferID, t.State, StateCaptured)
+		return fmt.Errorf("transfer %q is %s, Accept requires %s", transferID, t.State, StateCaptured)
 	}
 
 	now, err := txTime(ctx)
@@ -154,10 +172,53 @@ func (s *SmartContract) Prepare(ctx contractapi.TransactionContextInterface, tra
 		return fmt.Errorf("transfer %q expired at %d (tx time %d)", transferID, t.ExpiresAt, now)
 	}
 
-	if err := lockFunds(ctx, t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+	t.State = StateAccepted
+	t.AcceptedAt = now
+
+	if err := putTransfer(ctx, key, t); err != nil {
+		return err
+	}
+	return emit(ctx, EventAccepted, t, now)
+}
+
+// ---------------------------------------------------------------------------
+// Prepare
+// ---------------------------------------------------------------------------
+
+// Prepare locks both legs against their payers' available balances and anchors a
+// proof hash over the transfer's canonical fields.
+//
+// A lock is taken in full or not at all. Available balance is Total - Locked, so
+// a second transfer cannot be prepared against funds an earlier one already
+// holds — that is what stops a double-spend.
+//
+// It requires ACCEPTED, so the payout organisation has agreed to the terms before
+// its funds can be locked.
+func (s *SmartContract) Prepare(ctx contractapi.TransactionContextInterface, transferID string) error {
+	key, t, err := loadTransfer(ctx, transferID)
+	if err != nil {
+		return err
+	}
+	if err := requireParty(ctx, t); err != nil {
+		return err
+	}
+	if t.State != StateAccepted {
+		return fmt.Errorf("transfer %q is %s, Prepare requires %s", transferID, t.State, StateAccepted)
+	}
+
+	now, err := txTime(ctx)
+	if err != nil {
+		return err
+	}
+	if now >= t.ExpiresAt {
+		return fmt.Errorf("transfer %q expired at %d (tx time %d)", transferID, t.ExpiresAt, now)
+	}
+
+	book := newBalanceBook(ctx)
+	if err := book.lock(t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
 		return fmt.Errorf("lock sender leg: %w", err)
 	}
-	if err := lockFunds(ctx, t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+	if err := book.lock(t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
 		// Both locks are written in the same transaction, so a failure here
 		// discards the sender-leg lock along with everything else in the write
 		// set. There is no partial lock to unwind.
@@ -214,12 +275,15 @@ func (s *SmartContract) Commit(ctx contractapi.TransactionContextInterface, tran
 		return fmt.Errorf("transfer %q proof hash mismatch: state was modified after prepare", transferID)
 	}
 
-	// Both legs move here. A failure in either settlement discards the whole
-	// write set, which is the atomicity guarantee the design rests on.
-	if err := settleLeg(ctx, t.SenderOrg, t.PayoutOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+	// Both legs move through ONE book, so the second leg reads balances the
+	// first leg already changed. Fabric's GetState does not see the current
+	// transaction's own writes, so without this the two legs would read stale
+	// values wherever they touch the same account and currency.
+	book := newBalanceBook(ctx)
+	if err := book.settle(t.SenderOrg, t.PayoutOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
 		return fmt.Errorf("settle sender leg: %w", err)
 	}
-	if err := settleLeg(ctx, t.PayoutOrg, t.PayoutPayeeRef, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+	if err := book.settle(t.PayoutOrg, t.PayoutPayeeRef, t.PayoutCcy, t.PayoutLegAmount); err != nil {
 		return fmt.Errorf("settle payout leg: %w", err)
 	}
 
@@ -236,18 +300,20 @@ func (s *SmartContract) Commit(ctx contractapi.TransactionContextInterface, tran
 // Abort
 // ---------------------------------------------------------------------------
 
-// Abort releases both locks and leaves every balance exactly as it was — a full
+// Abort releases any locks and leaves every balance exactly as it was — a full
 // refund of both legs.
 //
-// Either party may abort a CAPTURED transfer, because nothing is locked in that
-// state. A PREPARED transfer can only be aborted once it has expired.
+// Either party may abort a CAPTURED or ACCEPTED transfer, because nothing is
+// locked in either state. A PREPARED transfer can only be aborted once it has
+// expired.
 //
 // Deviation from the original brief, recorded deliberately: the brief allows
 // abort "on failure" as well as after expiry. Letting one party unilaterally
 // abort a prepared, unexpired transfer is a griefing vector — the counterparty
 // has locked funds in good faith and would have no recourse. A coordinated early
-// abort needs both signatures and belongs with the Phase 1 coordinator; until
-// then the expiry is the only release valve, which is the conservative choice.
+// abort needs both signatures and belongs with the Phase 1 coordinator. The
+// exposure this creates is bounded by MaxSettlementWindowSeconds, and funds
+// cannot be locked at all without the payout org's Accept.
 func (s *SmartContract) Abort(ctx contractapi.TransactionContextInterface, transferID string) error {
 	key, t, err := loadTransfer(ctx, transferID)
 	if err != nil {
@@ -271,10 +337,11 @@ func (s *SmartContract) Abort(ctx contractapi.TransactionContextInterface, trans
 	}
 
 	if t.State == StatePrepared {
-		if err := releaseFunds(ctx, t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+		book := newBalanceBook(ctx)
+		if err := book.release(t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
 			return fmt.Errorf("release sender leg: %w", err)
 		}
-		if err := releaseFunds(ctx, t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+		if err := book.release(t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
 			return fmt.Errorf("release payout leg: %w", err)
 		}
 	}
@@ -304,7 +371,7 @@ func (s *SmartContract) GetTransfer(ctx contractapi.TransactionContextInterface,
 // GetBalance returns an account's holding in one currency. An account with no
 // holdings reads as zero rather than as an error.
 func (s *SmartContract) GetBalance(ctx contractapi.TransactionContextInterface, account, ccy string) (*Balance, error) {
-	b, err := readBalance(ctx, account, ccy)
+	b, err := newBalanceBook(ctx).get(account, ccy)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +400,8 @@ func (s *SmartContract) SeedBalance(ctx contractapi.TransactionContextInterface,
 	if err != nil {
 		return err
 	}
-	b, err := readBalance(ctx, mspID, ccy)
+	book := newBalanceBook(ctx)
+	b, err := book.get(mspID, ccy)
 	if err != nil {
 		return err
 	}
@@ -342,85 +410,51 @@ func (s *SmartContract) SeedBalance(ctx contractapi.TransactionContextInterface,
 		return fmt.Errorf("credit %s %s: %w", mspID, ccy, err)
 	}
 	b.Total = total
-	return writeBalance(ctx, b)
+	return book.put(b)
 }
 
 // ---------------------------------------------------------------------------
-// Balance helpers
+// balanceBook — a per-transaction view of balances
 // ---------------------------------------------------------------------------
 
-func lockFunds(ctx contractapi.TransactionContextInterface, account, ccy string, amount uint64) error {
-	b, err := readBalance(ctx, account, ccy)
-	if err != nil {
-		return err
-	}
-	if b.Available() < amount {
-		return fmt.Errorf(
-			"account %s has %d available %s, needs %d",
-			account, b.Available(), ccy, amount)
-	}
-	locked, err := addU64(b.Locked, amount)
-	if err != nil {
-		return err
-	}
-	b.Locked = locked
-	return writeBalance(ctx, b)
+// balanceBook caches the balances a single invocation has already written, so
+// that a later read within the same transaction sees them.
+//
+// This matters because Fabric does not give chaincode read-your-writes.
+// txSimulator.SetState appends to the transaction's write set, while
+// queryExecutor.GetState reads the state database directly and never consults
+// it. Two legs that touch the same account and currency would therefore both
+// read the pre-transaction value, and the second write would silently discard
+// the first — creating or destroying value depending on the direction.
+//
+// One book is created per invocation and passed through every balance
+// operation of that invocation. It is never shared between transactions.
+type balanceBook struct {
+	ctx   contractapi.TransactionContextInterface
+	cache map[string]Balance
 }
 
-func releaseFunds(ctx contractapi.TransactionContextInterface, account, ccy string, amount uint64) error {
-	b, err := readBalance(ctx, account, ccy)
-	if err != nil {
-		return err
-	}
-	if b.Locked < amount {
-		return fmt.Errorf("account %s has %d locked %s, cannot release %d", account, b.Locked, ccy, amount)
-	}
-	b.Locked -= amount
-	return writeBalance(ctx, b)
+func newBalanceBook(ctx contractapi.TransactionContextInterface) *balanceBook {
+	return &balanceBook{ctx: ctx, cache: map[string]Balance{}}
 }
 
-// settleLeg consumes a lock on the payer and credits the payee, in that order.
-func settleLeg(ctx contractapi.TransactionContextInterface, payer, payee, ccy string, amount uint64) error {
-	from, err := readBalance(ctx, payer, ccy)
-	if err != nil {
-		return err
-	}
-	if from.Locked < amount {
-		return fmt.Errorf("payer %s has %d locked %s, cannot settle %d", payer, from.Locked, ccy, amount)
-	}
-	if from.Total < amount {
-		return fmt.Errorf("payer %s has %d total %s, cannot settle %d", payer, from.Total, ccy, amount)
-	}
-	from.Locked -= amount
-	from.Total -= amount
-	if err := writeBalance(ctx, from); err != nil {
-		return err
-	}
-
-	to, err := readBalance(ctx, payee, ccy)
-	if err != nil {
-		return err
-	}
-	total, err := addU64(to.Total, amount)
-	if err != nil {
-		return fmt.Errorf("credit %s %s: %w", payee, ccy, err)
-	}
-	to.Total = total
-	return writeBalance(ctx, to)
-}
-
-func readBalance(ctx contractapi.TransactionContextInterface, account, ccy string) (Balance, error) {
+// get returns this transaction's current view of a balance: what it has already
+// written, otherwise what is committed. An unknown account reads as zero.
+func (bk *balanceBook) get(account, ccy string) (Balance, error) {
 	if err := requireNonEmpty("account", account); err != nil {
 		return Balance{}, err
 	}
 	if err := requireNonEmpty("ccy", ccy); err != nil {
 		return Balance{}, err
 	}
-	key, err := balanceKey(ctx, account, ccy)
+	key, err := balanceKey(bk.ctx, account, ccy)
 	if err != nil {
 		return Balance{}, err
 	}
-	raw, err := ctx.GetStub().GetState(key)
+	if cached, ok := bk.cache[key]; ok {
+		return cached, nil
+	}
+	raw, err := bk.ctx.GetStub().GetState(key)
 	if err != nil {
 		return Balance{}, fmt.Errorf("read balance %s/%s: %w", account, ccy, err)
 	}
@@ -434,15 +468,16 @@ func readBalance(ctx contractapi.TransactionContextInterface, account, ccy strin
 	return b, nil
 }
 
-func writeBalance(ctx contractapi.TransactionContextInterface, b Balance) error {
+// put writes a balance to the ledger and to this transaction's own view of it.
+func (bk *balanceBook) put(b Balance) error {
 	if b.Locked > b.Total {
-		// Defensive: every caller above checks its own precondition, so reaching
+		// Defensive: every caller below checks its own precondition, so reaching
 		// this means a bug rather than bad input. Fail the transaction instead of
 		// persisting a broken invariant.
 		return fmt.Errorf("invariant violated for %s/%s: locked %d exceeds total %d",
 			b.Account, b.Ccy, b.Locked, b.Total)
 	}
-	key, err := balanceKey(ctx, b.Account, b.Ccy)
+	key, err := balanceKey(bk.ctx, b.Account, b.Ccy)
 	if err != nil {
 		return err
 	}
@@ -450,10 +485,71 @@ func writeBalance(ctx contractapi.TransactionContextInterface, b Balance) error 
 	if err != nil {
 		return fmt.Errorf("encode balance %s/%s: %w", b.Account, b.Ccy, err)
 	}
-	if err := ctx.GetStub().PutState(key, raw); err != nil {
+	if err := bk.ctx.GetStub().PutState(key, raw); err != nil {
 		return fmt.Errorf("write balance %s/%s: %w", b.Account, b.Ccy, err)
 	}
+	bk.cache[key] = b
 	return nil
+}
+
+func (bk *balanceBook) lock(account, ccy string, amount uint64) error {
+	b, err := bk.get(account, ccy)
+	if err != nil {
+		return err
+	}
+	if b.Available() < amount {
+		return fmt.Errorf(
+			"account %s has %d available %s, needs %d",
+			account, b.Available(), ccy, amount)
+	}
+	locked, err := addU64(b.Locked, amount)
+	if err != nil {
+		return err
+	}
+	b.Locked = locked
+	return bk.put(b)
+}
+
+func (bk *balanceBook) release(account, ccy string, amount uint64) error {
+	b, err := bk.get(account, ccy)
+	if err != nil {
+		return err
+	}
+	if b.Locked < amount {
+		return fmt.Errorf("account %s has %d locked %s, cannot release %d", account, b.Locked, ccy, amount)
+	}
+	b.Locked -= amount
+	return bk.put(b)
+}
+
+// settle consumes a lock on the payer and credits the payee, in that order.
+func (bk *balanceBook) settle(payer, payee, ccy string, amount uint64) error {
+	from, err := bk.get(payer, ccy)
+	if err != nil {
+		return err
+	}
+	if from.Locked < amount {
+		return fmt.Errorf("payer %s has %d locked %s, cannot settle %d", payer, from.Locked, ccy, amount)
+	}
+	if from.Total < amount {
+		return fmt.Errorf("payer %s has %d total %s, cannot settle %d", payer, from.Total, ccy, amount)
+	}
+	from.Locked -= amount
+	from.Total -= amount
+	if err := bk.put(from); err != nil {
+		return err
+	}
+
+	to, err := bk.get(payee, ccy)
+	if err != nil {
+		return err
+	}
+	total, err := addU64(to.Total, amount)
+	if err != nil {
+		return fmt.Errorf("credit %s %s: %w", payee, ccy, err)
+	}
+	to.Total = total
+	return bk.put(to)
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +608,7 @@ func proofHash(t Transfer) string {
 		t.QuoteID,
 		strconv.FormatInt(t.ExpiresAt, 10),
 		strconv.FormatInt(t.CreatedAt, 10),
+		strconv.FormatInt(t.AcceptedAt, 10),
 		strconv.FormatInt(t.PreparedAt, 10),
 	} {
 		// Length-prefixed so that concatenation is unambiguous: "ab"+"c" and

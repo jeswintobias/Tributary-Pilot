@@ -70,12 +70,12 @@ setPlatformOrg() {
   export CORE_PEER_TLS_ENABLED=true
 }
 
-# expect_rejected <description> <json-args>
+# expect_rejected <description> <json-args> [expected-message]
 # Submits as PlatformOrg and requires the call to be refused by the chaincode
-# with the "not a party" message. A refusal for any other reason is a failure:
-# we are testing the contract's access control, not the channel ACL.
+# with a specific message. A refusal for any other reason is a failure: we are
+# testing the contract's access control, not the channel ACL.
 expect_rejected() {
-  local what="$1" args="$2" out rc
+  local what="$1" args="$2" want="${3:-is not a party to transfer}" out rc
   setPlatformOrg
   set +e
   out="$(peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
@@ -88,11 +88,11 @@ expect_rejected() {
     printf '%s\n' "${out}" >&2
     die "${what}: PlatformOrg was ALLOWED to do this"
   fi
-  if printf '%s' "${out}" | grep -q "is not a party to transfer"; then
-    pass "${what} — rejected by the chaincode: \"caller Org3MSP is not a party to transfer\""
+  if printf '%s' "${out}" | grep -q "${want}"; then
+    pass "${what} — rejected by the chaincode: \"${want}\""
   else
     printf '%s\n' "${out}" >&2
-    die "${what}: rejected, but not by the contract's party check — see output above"
+    die "${what}: rejected, but not with \"${want}\" — see output above"
   fi
 }
 
@@ -101,11 +101,12 @@ step "Setting up a transfer between SenderOrg and PayoutBankOrg"
 # ---------------------------------------------------------------------------
 TID="TP-T21-${STAMP}"
 PAYEE="sha256:collegefeespayeeref0000000000000000"
-EXPIRY=$(( $(date +%s) + 1800 ))
+EXPIRY=$(( $(date +%s) + 900 ))
 
 invoke 1 '{"Args":["SeedBalance","AED","100000000"]}'
 invoke 2 '{"Args":["SeedBalance","INR","1000000000"]}'
 invoke 1 "{\"Args\":[\"CreateTransfer\",\"${TID}\",\"220000\",\"AED\",\"3000000\",\"INR\",\"quote-${STAMP}\",\"${EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 2 "{\"Args\":[\"Accept\",\"${TID}\"]}"
 invoke 1 "{\"Args\":[\"Prepare\",\"${TID}\"]}"
 
 STATE="$(query_raw 1 "{\"Args\":[\"GetTransfer\",\"${TID}\"]}" \
@@ -119,6 +120,7 @@ step "T2.1 — PlatformOrg is a channel member, but not a party to this transfer
 expect_rejected "Commit"  "{\"Args\":[\"Commit\",\"${TID}\"]}"
 expect_rejected "Abort"   "{\"Args\":[\"Abort\",\"${TID}\"]}"
 expect_rejected "Prepare" "{\"Args\":[\"Prepare\",\"${TID}\"]}"
+expect_rejected "Accept"  "{\"Args\":[\"Accept\",\"${TID}\"]}" "only the payout org"
 
 # ---------------------------------------------------------------------------
 step "PlatformOrg CAN read — it is a regulator observer, after all"
