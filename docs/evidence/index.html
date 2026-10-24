@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tributary Pilot — Settlement Evidence</title>
-<meta name="description" content="Captured output from the Phase 0 verification runs: atomic settlement, refund on expiry, and two access-control refusals on a live DRUNIX network.">
+<meta name="description" content="Captured output from the Phase 0 verification runs: atomic settlement, refund on expiry, and three access-control refusals on a live DRUNIX network.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
@@ -245,12 +245,12 @@ footer a { color: var(--accent); }
     </p>
     <div class="provenance">
       <div class="prov-cell">
-        <span class="prov-k">Settlement run</span>
-        <span class="prov-v">down → up → deploy → demo<br>exit 0</span>
+        <span class="prov-k">Run</span>
+        <span class="prov-v">down → up → deploy → demo<br>→ add-platform-org → verify</span>
       </div>
       <div class="prov-cell">
-        <span class="prov-k">Access-control run</span>
-        <span class="prov-v">+ add-platform-org → verify<br>exit 0</span>
+        <span class="prov-k">Result</span>
+        <span class="prov-v">exit 0<br>39 unit tests, 77.5% cover</span>
       </div>
       <div class="prov-cell">
         <span class="prov-k">Platform</span>
@@ -273,7 +273,8 @@ footer a { color: var(--accent); }
         Ravi sends 2,200 AED from Dubai; ₹30,000 is bound to his sister's college fees.
         The chaincode holds amounts as integers in minor units — 220,000 fils and
         3,000,000 paise — so no floating-point value touches money at any point.
-        These are the four states the transfer passed through, as the ledger returned them.
+        These are the states the transfer passed through, as the ledger returned them,
+        following NPCI's capture → accept → prepare → commit flow.
       </p>
     </div>
 
@@ -284,11 +285,25 @@ footer a { color: var(--accent); }
           <span class="step-call">CreateTransfer(…)</span>
         </div>
         <p class="step-note">Recorded. Nothing is locked and nothing has moved. The proof hash is still empty.</p>
-<pre>{"transferID":"TP-HAPPY-1792821357","senderOrg":"Org1MSP",
+<pre>{"transferID":"TP-HAPPY-1792834018","senderOrg":"Org1MSP",
  "senderLegAmount":220000,"senderCcy":"AED",
  "payoutOrg":"Org2MSP","payoutLegAmount":3000000,"payoutCcy":"INR",
  "state":<b>"CAPTURED"</b>,"proofHash":<b>""</b>,
- "createdAt":1792821373,"preparedAt":0,"resolvedAt":0}</pre>
+ "createdAt":1792834043,"acceptedAt":<b>0</b>,"preparedAt":0,"resolvedAt":0}</pre>
+      </div>
+
+      <div class="step">
+        <div class="step-top">
+          <span class="state">ACCEPTED</span>
+          <span class="step-call">Accept(transferID)</span>
+        </div>
+        <p class="step-note">
+          The payout bank agrees to the terms. Only it can make this call, and it still
+          locks nothing. Without this step the sending institution could lock the bank's
+          liquidity on its own — a defect found in review and fixed.
+        </p>
+<pre>{… "state":<b>"ACCEPTED"</b>,"proofHash":<b>""</b>,
+ "createdAt":1792834043,"acceptedAt":<b>1792834051</b>,"preparedAt":0}</pre>
       </div>
 
       <div class="step">
@@ -301,8 +316,8 @@ footer a { color: var(--accent); }
           transfer's economic terms. Totals are untouched — only the locked column moves.
         </p>
 <pre>{… "state":<b>"PREPARED"</b>,
- "proofHash":<b>"e9b3ceae2483fd3b6ea59a55766d7760d5c1624ac2c21b8695ffe30558b7d639"</b>,
- "preparedAt":1792821382}
+ "proofHash":<b>"3748248a5ddc17d3c5635fcb98037e21b9853545725566b1f267e5d7cb546446"</b>,
+ "acceptedAt":1792834051,"preparedAt":<b>1792834059</b>}
 
 {"account":"Org1MSP","ccy":"AED","total":100000000,"locked":<b>220000</b>}
 {"account":"Org2MSP","ccy":"INR","total":1000000000,"locked":<b>3000000</b>}</pre>
@@ -317,7 +332,7 @@ footer a { color: var(--accent); }
           Guards re-checked, the anchored hash re-verified, both locks consumed and both
           legs moved inside one transaction. Terminal — a replayed commit is refused.
         </p>
-<pre>{… "state":<span class="ok">"SETTLED"</span>,"resolvedAt":1792821398}</pre>
+<pre>{… "state":<span class="ok">"SETTLED"</span>,"resolvedAt":1792834076}</pre>
       </div>
     </div>
 
@@ -403,14 +418,23 @@ after Abort — state <span class="ok">"ABORTED"</span>
   <div class="wrap">
     <div class="sec-head">
       <span class="eyebrow">Claim 03 — access control</span>
-      <h2>Two ways to settle a transfer you shouldn't, both refused</h2>
+      <h2>Three ways to move a transfer you shouldn't, all refused</h2>
       <p>
-        These are the controls the design rests on, and neither can be demonstrated against
-        a mock. Both were run against the live network.
+        These are the controls the design rests on, and none can be demonstrated against a
+        mock. All were run against the live network.
       </p>
     </div>
 
-    <h3>One organisation acting alone</h3>
+    <h3>The sender locking the payout bank's funds</h3>
+    <p class="step-note">
+      <span class="mono-inline">Prepare</span> locks <em>both</em> parties' funds, so the
+      payout bank must accept the terms first. A sender attempting to prepare on its own
+      is refused, and the bank's balance is untouched.
+    </p>
+<pre><span class="ok">OK: Prepare before Accept refused — payout bank funds cannot be locked unilaterally</span>
+{"account":"Org2MSP","ccy":"INR","total":1000000000,"locked":<span class="ok">0</span>}</pre>
+
+    <h3 style="margin-top:0.6rem">One organisation acting alone</h3>
     <p class="step-note">
       A <span class="mono-inline">Commit</span> endorsed only by Org1MSP was submitted and ordered.
       The Validation Service rejected it, so the ledger never changed.
@@ -439,6 +463,11 @@ after Abort — state <span class="ok">"ABORTED"</span>
         <span class="badge">Refused</span>
         <h3>Prepare</h3>
         <code>caller Org3MSP is not a party to transfer</code>
+      </div>
+      <div class="refusal">
+        <span class="badge">Refused</span>
+        <h3>Accept</h3>
+        <code>only the payout org Org2MSP may accept transfer …</code>
       </div>
       <div class="refusal is-allowed">
         <span class="badge">Allowed</span>
@@ -495,6 +524,58 @@ after Abort — state <span class="ok">"ABORTED"</span>
 <section>
   <div class="wrap">
     <div class="sec-head">
+      <span class="eyebrow">Found in review</span>
+      <h2>Two defects, reproduced before they were fixed</h2>
+      <p>
+        An external reviewer read the contract against Fabric's real semantics and found
+        two bugs. Both were reproduced first, so the fix could be shown to address the
+        actual failure rather than a guess at it.
+      </p>
+    </div>
+
+    <div class="steps">
+      <div class="step is-void">
+        <div class="step-top">
+          <span class="state">01</span>
+          <span class="step-call">Fabric has no read-your-writes</span>
+        </div>
+        <p class="step-note">
+          <span class="mono-inline">SetState</span> appends to the transaction's write set;
+          <span class="mono-inline">GetState</span> reads the state database and never
+          consults it. <span class="mono-inline">Commit</span> settles two legs, so where
+          both touched the same account the second read a stale balance and overwrote the
+          first. The test mock applied writes immediately, which is why 26 tests passed
+          over it.
+        </p>
+<pre>payout bank INR before=3000000 after total=<span class="no">6000000</span> locked=<span class="no">3000000</span>
+<span class="no">VALUE CREATED: paying itself changed total from 3000000 to 6000000</span></pre>
+        <p class="step-note">
+          Fixed by routing every balance operation in an invocation through one
+          write-through cache. The mock now buffers writes and discards them when a call
+          errors, exactly as a peer does, so this class of bug fails the tests.
+        </p>
+      </div>
+
+      <div class="step is-void">
+        <div class="step-top">
+          <span class="state">02</span>
+          <span class="step-call">Unilateral locking</span>
+        </div>
+        <p class="step-note">
+          The sending org could create and prepare a transfer alone, with an unbounded
+          expiry — and the payout bank could not abort until that expiry passed. A one-fils
+          transfer could hold its whole balance for years. Fixed by the
+          <span class="mono-inline">Accept</span> step above and a 900-second cap on the
+          settlement window, matching the lifetime of a signed FX quote.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
       <span class="eyebrow">Limits</span>
       <h2>What this page does not show</h2>
       <p>
@@ -508,6 +589,7 @@ after Abort — state <span class="ok">"ABORTED"</span>
       <li><b>No rupee or dollar saving is claimed.</b> The figures above are a buffer ratio on synthetic data; converting one into money needs a balance-sheet size and a cost of capital this project does not have.</li>
       <li><b>Token, pool, policy, attestation and payout contracts do not exist yet.</b> Phase 0 implements settlement only. Balances come from a minimal in-contract map that the token contract replaces.</li>
       <li><b>The endorsement policy is chaincode-wide.</b> Fabric applies it to every function rather than only to Commit; narrowing it needs state-based endorsement.</li>
+      <li><b>Early abort still needs the expiry to pass.</b> A prepared transfer cannot be aborted by one party before it expires. The exposure is bounded at fifteen minutes and cannot begin without the payout bank's Accept, but a coordinated early abort needs both signatures and is Phase 1.</li>
     </ul>
   </div>
 </section>
