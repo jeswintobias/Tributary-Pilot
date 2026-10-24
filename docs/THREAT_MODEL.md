@@ -34,7 +34,7 @@ of trying to cheat the other, which is the entire reason for two-phase commit.
 | # | Threat | Control | Test |
 |---|---|---|---|
 | T2.1 | An unrelated organisation commits someone else's transfer | Caller's MSP ID is read from the signing identity and checked against the transfer's two parties on every privileged call | `TestCommit_UnauthorizedOrg_Fails` |
-| T2.2 | One org unilaterally settles without the counterparty agreeing | Endorsement policy on `Commit` is `AND('SenderOrgMSP.peer','PayoutBankOrgMSP.peer')`; a single-org transaction fails validation at the Validation Service | **Planned** — needs the live network (`network/deploy-cc.sh` sets the policy) |
+| T2.2 | One org unilaterally settles without the counterparty agreeing | Endorsement policy requires both parties — `AND('Org1MSP.peer','Org2MSP.peer')` with the Phase 0 org mapping; a single-org transaction fails validation at the Validation Service | **Verified on the live network** — `network/demo.sh` commits with one org's endorsement and the transfer stays `PREPARED` |
 | T2.3 | A client forges an MSP ID in the call arguments | MSP ID is never taken from arguments; it comes from `stub.GetCreator()` via the client identity library | `TestCommit_UnauthorizedOrg_Fails` |
 | T2.4 | An operator raises their own limit and moves pool funds | Maker-checker: proposer must differ from approver for limit-exceeding actions | **Planned** — Phase 1 `policy` contract |
 
@@ -76,13 +76,19 @@ of trying to cheat the other, which is the entire reason for two-phase commit.
 Stated plainly, because the whole point of this document is that we do not
 overclaim:
 
-1. **The endorsement policy is not yet demonstrated.** T2.2 is the single most
-   important control in the design and it can only be proven on a running network.
-   Until `network/up.sh` succeeds on this machine, it is Planned.
-2. **There is one ledger, not two.** Cross-chain proof verification is stubbed as a
+1. **There is one ledger, not two.** Cross-chain proof verification is stubbed as a
    local proof hash. The Herstatt-risk argument is sound for the state machine but
    has not been shown across two networks.
-3. **No PII handling exists yet to audit**, because no service writes any. The rule
+2. **No PII handling exists yet to audit**, because no service writes any. The rule
    is documented and will be enforceable once the compliance service lands.
-4. **Nothing has been benchmarked.** No TPS or latency number appears anywhere in
-   this repository, and none will until Caliper runs.
+3. **Nothing has been benchmarked.** No TPS or latency number appears anywhere in
+   this repository, and none will until Caliper runs — and it cannot be measured
+   honestly on the machine this was built on, because DRUNIX publishes amd64
+   images only and everything here ran emulated on Apple silicon.
+4. **The endorsement policy is chaincode-wide, not per-function.** T2.2 is
+   verified, but Fabric applies the policy to every function rather than only to
+   `Commit`. Narrowing it needs state-based endorsement, which is Phase 1. Erring
+   toward the stricter policy is the safe direction.
+5. **`PlatformOrg` does not exist on the network.** T2.1's test uses a
+   non-party MSP ID against a mock stub; on the live two-org network there is no
+   third organisation to try it with.

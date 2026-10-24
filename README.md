@@ -51,16 +51,65 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
 | P0.3 | Settlement chaincode (Go) — 2PC state machine | **Done** | 26 unit tests, `cd chaincode/settlement && go test ./...` |
 | P0.4a | Go unit tests with mock stub | **Done** | 26 tests passing, 76.3% statement coverage |
-| P0.2 | DRUNIX test network bring-up scripts | **In progress** | — |
-| P0.4b | Live happy-path and abort-path scripts | **Planned** | — |
-| P0.5 | Synthetic corridor data generator | **Planned** | — |
-| P0.5 | Quantile forecasting notebook + pool sizing | **Planned** | — |
+| P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
+| P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
+| P0.4b | Live happy-path and abort-path demo | **Done** | `./network/demo.sh` — settles on-chain; single-org commit refused |
+| P0.5 | Synthetic corridor data generator | **Done** | `python agent/data/generate.py` — 96,384 rows, deterministic |
+| P0.5 | Quantile forecasting notebook + pool sizing | **Done** | `agent/notebooks/forecast.ipynb` — executed, 12/12 cells, 4 figures, no errors |
+| P0.6 | Submission summary + truth pass on this table | **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
 | — | `PlatformOrg` as a third organisation | **Planned** | DRUNIX's sample network ships two orgs and no `addOrg3`; see [ARCHITECTURE.md §3](docs/ARCHITECTURE.md#3-organisations) |
 | — | Token, pool, policy, attestation, payout contracts | **Planned** | Phase 1 — see [ROADMAP.md](docs/ROADMAP.md) |
 | — | Services, web apps, AI agent, benchmarks | **Planned** | Phase 1 |
 
-No throughput, latency or cost figure appears anywhere in this repository. None
-will until it is measured.
+**No throughput, latency or cost figure appears anywhere in this repository.**
+None will until it is measured, and it cannot be measured honestly here: DRUNIX
+publishes `linux/amd64` images only, so on this Apple-silicon machine every
+container runs emulated. Benchmarking belongs on amd64 Linux with Caliper.
+
+### What the live network has and has not shown
+
+Shown, and reproducible with the scripts above:
+
+- The DRUNIX topology comes up — orderer, Lite Peers, Committing Peers,
+  Validation Services, YugabyteDB, KeyDB — and both orgs join `mychannel`.
+- The settlement chaincode installs and commits under
+  `AND('Org1MSP.peer','Org2MSP.peer')`.
+- A transfer settles atomically on-chain: 2,200 AED (220,000 fils) moves from
+  `SenderOrg` to `PayoutBankOrg` and ₹30,000 (3,000,000 paise) moves from
+  `PayoutBankOrg` to the beneficiary reference, in one transaction.
+- **A `Commit` endorsed by one organisation alone does not take effect** — the
+  transfer stays `PREPARED`. This is threat T2.2, and it could only ever be
+  proven on a live network.
+
+Not shown:
+
+- `PlatformOrg` as a third organisation. DRUNIX's sample network ships two orgs
+  and no `addOrg3`, so the live network runs `SenderOrg` and `PayoutBankOrg`
+  only. The chaincode reads MSP IDs from the signing identity, so adding the org
+  is configuration plus an endorsement-policy change, not a code change.
+- Anything across two ledgers. Phase 0 is single-ledger; the proof hash is
+  anchored and re-checked locally rather than exchanged with a counterparty
+  network.
+- Per-function endorsement policy. Fabric applies a chaincode-level policy to
+  every function, not only `Commit`; narrowing it needs state-based endorsement,
+  which is Phase 1.
+
+### Modelled results from the forecasting notebook
+
+Synthetic data, stated assumptions, **not a claim about any real corridor.**
+
+| Measured on the synthetic holdout | Result |
+|---|---|
+| P50 coverage (nominal 0.50) | 0.496 – 0.503 |
+| P90 coverage (nominal 0.90) | 0.862 – 0.875 — under-dispersed, see the notebook |
+| Buffer reduction, pooling + netting, 4h window at matched 1% shortfall risk | **37.2%** |
+| Same, across the window and quantile grid | 13.9% – 43.8% |
+| Realised shortfall, both designs, against a 1% target | 1.01% each — the comparison was like-for-like |
+
+Read [`docs/ASSUMPTIONS.md` §3](docs/ASSUMPTIONS.md) and §6 of the notebook
+before quoting any of these. We quote **no rupee or dollar capital saving**:
+converting a buffer ratio into money needs a balance-sheet size and a cost of
+capital we do not have and will not assume.
 
 ## Real vs simulated
 
@@ -100,7 +149,21 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 ```bash
 ./network/up.sh                      # bring up the network and create the channel
 ./network/deploy-cc.sh settlement    # package, install, approve and commit
+./network/demo.sh                    # happy path + abort path, printing resulting states
 ./network/down.sh                    # tear down and clean
+```
+
+First run clones upstream and builds eight Go binaries, so give it time. On
+Apple silicon everything after that is emulated and slow. `demo.sh` expects a
+fresh network — balances accumulate across runs.
+
+### Forecasting notebook
+
+```bash
+cd agent && python3 -m venv .venv
+./.venv/bin/pip install numpy pandas lightgbm scikit-learn matplotlib jupyter
+./.venv/bin/python data/generate.py --out data/flows.csv
+./.venv/bin/jupyter lab notebooks/forecast.ipynb
 ```
 
 ## Repository layout
