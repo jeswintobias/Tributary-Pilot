@@ -57,7 +57,8 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P0.5 | Synthetic corridor data generator | **Done** | `python agent/data/generate.py` — 96,384 rows, deterministic |
 | P0.5 | Quantile forecasting notebook + pool sizing | **Done** | `agent/notebooks/forecast.ipynb` — executed, 12/12 cells, 4 figures, no errors |
 | P0.6 | Submission summary + truth pass on this table | **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
-| — | `PlatformOrg` as a third organisation | **Planned** | DRUNIX's sample network ships two orgs and no `addOrg3`; see [ARCHITECTURE.md §3](docs/ARCHITECTURE.md#3-organisations) |
+| P0.2 | `PlatformOrg` as a third organisation on the channel | **Done** | `./network/add-platform-org.sh` — `Org3MSP` is a channel member; **runs no peer**, see note below |
+| — | `PlatformOrg` endorsing peers | **Planned** | Phase 1 — a regulator observer does not endorse |
 | — | Token, pool, policy, attestation, payout contracts | **Planned** | Phase 1 — see [ROADMAP.md](docs/ROADMAP.md) |
 | — | Services, web apps, AI agent, benchmarks | **Planned** | Phase 1 |
 
@@ -81,12 +82,24 @@ Shown, and reproducible with the scripts above:
   transfer stays `PREPARED`. This is threat T2.2, and it could only ever be
   proven on a live network.
 
+- **A third organisation, `PlatformOrg` (`Org3MSP`), is a member of the
+  channel.** DRUNIX's sample network ships two orgs and no `addOrg3`, so
+  `network/add-platform-org.sh` drives the standard Fabric add-organisation flow
+  from this repository — generate crypto, print the org definition, splice it
+  into the channel config, collect signatures from the orgs already there,
+  submit. Upstream's `configtx.yaml` is never modified.
+- **Threat T2.1 is proven on the live network.** `PlatformOrg` holds a valid
+  admin identity with channel Writer rights, so its proposals reach the
+  chaincode — and `Commit`, `Abort` and `Prepare` are each refused with
+  *"caller Org3MSP is not a party to transfer"*. It can still **read** the
+  transfer, which is exactly what a regulator observer should be able to do.
+
 Not shown:
 
-- `PlatformOrg` as a third organisation. DRUNIX's sample network ships two orgs
-  and no `addOrg3`, so the live network runs `SenderOrg` and `PayoutBankOrg`
-  only. The chaincode reads MSP IDs from the signing identity, so adding the org
-  is configuration plus an endorsement-policy change, not a code change.
+- `PlatformOrg` running endorsing peers. It is a channel member with an
+  identity and read access, and no peer of its own. A regulator observer does
+  not endorse, and standing up its Lite/Committing/Validation containers is
+  Phase 1 work.
 - Anything across two ledgers. Phase 0 is single-ledger; the proof hash is
   anchored and re-checked locally rather than exchanged with a counterparty
   network.
@@ -150,6 +163,8 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 ./network/up.sh                      # bring up the network and create the channel
 ./network/deploy-cc.sh settlement    # package, install, approve and commit
 ./network/demo.sh                    # happy path + abort path, printing resulting states
+./network/add-platform-org.sh        # add PlatformOrg (Org3MSP) to the channel
+./network/verify-platformorg.sh      # prove T2.1: a non-party org cannot settle
 ./network/down.sh                    # tear down and clean
 ```
 

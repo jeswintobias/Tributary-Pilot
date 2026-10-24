@@ -56,15 +56,29 @@ agent holds no key that can move money.
 |---|---|---|---|
 | `SenderOrg` | UAE money transfer operator originating the transfer | `Org1MSP` | Mapped to the stock `Org1` of the DRUNIX test network |
 | `PayoutBankOrg` | Indian bank paying out via UPI / e₹ | `Org2MSP` | Mapped to the stock `Org2` of the DRUNIX test network |
-| `PlatformOrg` | NPCI platform node, regulator observer | `Org3MSP` | **Planned** — see note below |
+| `PlatformOrg` | NPCI platform node, regulator observer | `Org3MSP` | Channel member. Holds an admin identity and read access; **runs no peer** |
 
 **Note on the third org.** The DRUNIX sample network at
 `drunix-network/test-network` ships with exactly two peer organisations and, unlike
-stock Hyperledger Fabric, carries no `addOrg3` sample. Standing up `PlatformOrg`
-means hand-writing `configtx`, `crypto-config` and compose material. Phase 0
-deliberately does not spend its remaining hours there; the settlement chaincode's
-access control is nevertheless written against named MSP IDs, so adding the org is
-configuration plus an endorsement-policy change, not a code change.
+stock Hyperledger Fabric, carries no `addOrg3` sample. `network/add-platform-org.sh`
+therefore drives the standard Fabric add-organisation flow from this repository:
+generate crypto with `cryptogen`, print the organisation definition with
+`configtxgen -printOrg` against our own minimal `configtx.yaml`, splice it into the
+fetched channel config, compute the delta, collect signatures from the
+organisations already on the channel, and submit. Upstream's own `configtx.yaml`
+is never modified.
+
+`PlatformOrg` joins as a **member with an identity, not as an endorser**. A
+regulator observer needs to read the ledger and to be a recognised party on the
+channel; it does not need to endorse. That is also what makes it the right
+instrument for threat T2.1: because its proposals are accepted by the channel and
+reach the chaincode, the chaincode's own access control is what has to turn them
+away — and it does. Standing up its Lite, Committing and Validation peers is
+Phase 1 work, tracked in [ROADMAP.md](ROADMAP.md).
+
+Adding `PlatformOrg` to the settlement endorsement policy would be a
+configuration change, not a code change: the contract reads MSP IDs from the
+signing identity and hard-codes none.
 
 ## 4. Why DRUNIX, and how it differs from stock Fabric
 

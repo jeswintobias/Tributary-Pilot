@@ -1,0 +1,30 @@
+# Minimal configtx defining only PlatformOrg (Org3MSP), used with
+#   configtxgen -printOrg Org3MSP
+# to produce the organisation definition that gets spliced into the channel
+# config.
+#
+# __MSPDIR__ is replaced at runtime by add-platform-org.sh with the absolute
+# path to the generated MSP. This file lives in our repository; upstream's own
+# configtx.yaml is never modified.
+Organizations:
+  - &Org3
+    Name: Org3MSP
+    ID: Org3MSP
+    MSPDir: __MSPDIR__
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Org3MSP.admin', 'Org3MSP.peer', 'Org3MSP.client')"
+      Writers:
+        # PlatformOrg may submit transactions — that is what lets us prove the
+        # chaincode rejects a non-party caller rather than the channel ACL
+        # rejecting it first. The chaincode's own access control is the
+        # control under test (threat T2.1).
+        Type: Signature
+        Rule: "OR('Org3MSP.admin', 'Org3MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Org3MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Org3MSP.peer')"

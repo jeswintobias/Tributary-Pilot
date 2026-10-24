@@ -41,8 +41,9 @@ next one starts.
 
 ## Deferred beyond Phase 1
 
-- Standing up `PlatformOrg` as a third organisation with a regulator observer
-  channel, which the DRUNIX sample network does not provide out of the box
+- Standing up `PlatformOrg`'s own Lite, Committing and Validation peers. It is
+  already a channel member with an identity and read access (Phase 0); what
+  remains is giving it nodes, and a regulator observer channel of its own
 - Multi-corridor netting across more than the four modelled corridors
 - Production key management and HSM integration
 - Any real payment-rail integration, which needs a licensed counterparty

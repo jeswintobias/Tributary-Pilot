@@ -77,7 +77,7 @@ Hyperledger Fabric, no `addOrg3` sample. Our roles map onto them:
 |---|---|---|
 | `SenderOrg` | UAE money transfer operator | `Org1MSP` |
 | `PayoutBankOrg` | Indian payout bank | `Org2MSP` |
-| `PlatformOrg` | NPCI platform node / regulator observer | **not stood up in Phase 0** |
+| `PlatformOrg` | NPCI platform node / regulator observer | `Org3MSP` — channel member, **no peer of its own** |
 
 See [`docs/ARCHITECTURE.md` §3](../docs/ARCHITECTURE.md#3-organisations).
 
@@ -99,11 +99,38 @@ fails. Our scripts always ask for index 0.
 ## Usage
 
 ```bash
-./network/up.sh                      # clone + build (first run), start, create channel
+./network/up.sh                      # fetch + build (first run), start, create channel
 ./network/deploy-cc.sh settlement    # package, install, approve, commit
 ./network/demo.sh                    # happy path + abort path against the live network
+./network/add-platform-org.sh        # add PlatformOrg (Org3MSP) to the channel
+./network/verify-platformorg.sh      # prove T2.1: a non-party org cannot settle
 ./network/down.sh                    # tear down and clean up
 ```
+
+### Adding PlatformOrg
+
+DRUNIX's sample network ships two organisations and, unlike stock Fabric, no
+`addOrg3` sample. `add-platform-org.sh` drives the standard add-organisation
+flow from this repository instead:
+
+1. `cryptogen` generates Org3 identities into `~/.tributary-pilot/platformorg`.
+2. `configtxgen -printOrg Org3MSP` produces the organisation definition, using
+   **our** minimal `platformorg/configtx-org3.template.yaml` — upstream's
+   `configtx.yaml` is never touched.
+3. The running channel config is fetched, Org3 is spliced into the Application
+   group, and `configtxlator` computes the delta.
+4. `Org1MSP` signs it and `Org2MSP` submits it. Adding a member needs the
+   existing members to agree — one organisation cannot admit another alone.
+
+It is idempotent: if `Org3MSP` is already in the channel config it exits early.
+
+`PlatformOrg` joins as a **member, not an endorser**. That is deliberate. A
+regulator observer needs to read the ledger and be a recognised identity; it
+does not need to endorse. It also makes it the right instrument for threat
+T2.1 — its proposals are accepted by the channel and reach the chaincode, so
+the contract's own access control is what has to refuse them.
+`verify-platformorg.sh` checks exactly that, and fails loudly if the refusal
+comes from anywhere other than the contract's party check.
 
 First run does a depth-1 fetch of the pinned commit and a full Go build of eight
 binaries, so give it time. Subsequent runs skip both.

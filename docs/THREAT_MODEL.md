@@ -31,11 +31,21 @@ of trying to cheat the other, which is the entire reason for two-phase commit.
 
 ## T2 — Authorisation
 
+T2.1 is the one to read carefully. `PlatformOrg` (`Org3MSP`) is a **full channel
+member** with Writer rights, so its transaction proposals are accepted by the
+channel and executed by the chaincode. Nothing upstream of the contract turns
+them away. On the live network, `Commit`, `Abort` and `Prepare` submitted with
+`PlatformOrg`'s identity against a transfer between `SenderOrg` and
+`PayoutBankOrg` are each refused with *"caller Org3MSP is not a party to
+transfer"* — the contract's own check, not a channel ACL. In the same run it
+reads the transfer successfully, which is the behaviour a regulator observer
+should have.
+
 | # | Threat | Control | Test |
 |---|---|---|---|
-| T2.1 | An unrelated organisation commits someone else's transfer | Caller's MSP ID is read from the signing identity and checked against the transfer's two parties on every privileged call | `TestCommit_UnauthorizedOrg_Fails` |
+| T2.1 | An unrelated organisation commits someone else's transfer | Caller's MSP ID is read from the signing identity and checked against the transfer's two parties on every privileged call | `TestCommit_UnauthorizedOrg_Fails`, and **verified on the live network** — `network/verify-platformorg.sh` |
 | T2.2 | One org unilaterally settles without the counterparty agreeing | Endorsement policy requires both parties — `AND('Org1MSP.peer','Org2MSP.peer')` with the Phase 0 org mapping; a single-org transaction fails validation at the Validation Service | **Verified on the live network** — `network/demo.sh` commits with one org's endorsement and the transfer stays `PREPARED` |
-| T2.3 | A client forges an MSP ID in the call arguments | MSP ID is never taken from arguments; it comes from `stub.GetCreator()` via the client identity library | `TestCommit_UnauthorizedOrg_Fails` |
+| T2.3 | A client forges an MSP ID in the call arguments | MSP ID is never taken from arguments; it comes from `stub.GetCreator()` via the client identity library | `TestCommit_UnauthorizedOrg_Fails`, and live: `PlatformOrg` cannot name itself a party |
 | T2.4 | An operator raises their own limit and moves pool funds | Maker-checker: proposer must differ from approver for limit-exceeding actions | **Planned** — Phase 1 `policy` contract |
 
 ## T3 — The AI agent
@@ -89,6 +99,6 @@ overclaim:
    verified, but Fabric applies the policy to every function rather than only to
    `Commit`. Narrowing it needs state-based endorsement, which is Phase 1. Erring
    toward the stricter policy is the safe direction.
-5. **`PlatformOrg` does not exist on the network.** T2.1's test uses a
-   non-party MSP ID against a mock stub; on the live two-org network there is no
-   third organisation to try it with.
+5. **`PlatformOrg` has no peers of its own.** It is a channel member with an
+   admin identity and read access, which is what T2.1 needed and all a regulator
+   observer requires. Its Lite, Committing and Validation peers are Phase 1.

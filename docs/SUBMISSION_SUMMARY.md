@@ -6,7 +6,8 @@ this repository that a reviewer can run.
 ---
 
 Tributary Pilot runs on NPCI's DRUNIX today: a two-phase-commit settlement
-chaincode in Go, deployed to a live two-org test network under an
+chaincode in Go, deployed to a live three-org test network — SenderOrg,
+PayoutBankOrg and PlatformOrg as regulator observer — under an
 `AND(SenderOrg, PayoutBankOrg)` endorsement policy, where a remittance's
 foreign-currency leg and its INR payout leg move atomically in one transaction —
 or neither does.
@@ -15,7 +16,9 @@ Correctness is demonstrated, not asserted: 26 Go unit tests (76% statement
 coverage) cover commit-without-prepare, commit-after-expiry, replayed transfer
 IDs, double-spend via a second prepare, non-party callers and integer exactness
 at 2^53+1; on the live network, a `Commit` endorsed by only one organisation
-leaves the transfer `PREPARED`, which is the control the whole design rests on.
+leaves the transfer `PREPARED`, and PlatformOrg — a full channel member — is
+refused `Commit`, `Abort` and `Prepare` on a transfer it is not a party to while
+still being able to read it.
 
 Money is held in integer minor units throughout, with no floating-point amount
 anywhere in the contract and no personally identifying information on the
@@ -39,8 +42,9 @@ precisely what works today and what does not.
 > Tributary Pilot settles cross-border remittances atomically on NPCI's DRUNIX.
 > A Go two-phase-commit chaincode is deployed to a live test network under an
 > `AND(SenderOrg, PayoutBankOrg)` endorsement policy: both legs of a transfer
-> move in one transaction or neither does, and a single-org commit is refused on
-> the live network. 26 unit tests at 76% coverage cover the rejection paths;
+> move in one transaction or neither does. On the live network a single-org
+> commit is refused, and a third org that is not a party to a transfer is
+> refused too while still able to read it. 26 unit tests at 76% coverage;
 > money is integer minor units and no PII touches the ledger. The AI agent's
 > quantile forecaster is built, and on synthetic data a shared netted pool needs
 > 37% less buffer than separate ones at matched risk — a modelled estimate, not a
@@ -52,8 +56,9 @@ precisely what works today and what does not.
 For whoever fills in the form: these are the overstatements to avoid, because
 the repository does not support them.
 
-- Not "running on a three-org network". DRUNIX's sample network ships two orgs
-  and no `addOrg3`; `PlatformOrg` is designed and documented, not deployed.
+- Not "three orgs each running peers". PlatformOrg is a channel member with an
+  identity and read access and runs no peer of its own; that is all a regulator
+  observer needs, and its nodes are Phase 1.
 - Not "cross-chain" or "interoperable" yet. Phase 0 is one ledger. The proof
   hash is anchored and re-checked locally, not exchanged with a counterparty
   network.
