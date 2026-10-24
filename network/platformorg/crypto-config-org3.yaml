@@ -1,0 +1,20 @@
+# Cryptogen definition for PlatformOrg — the NPCI platform node and regulator
+# observer, mapped to Org3MSP.
+#
+# PlatformOrg joins the channel as a MEMBER with an admin identity. It runs no
+# endorsing peer in Phase 0: a regulator observer needs to read the ledger and
+# to be a recognised identity on the channel, not to endorse transactions.
+# Standing up its peers is Phase 1 work and is tracked in docs/ROADMAP.md.
+#
+# One peer is generated anyway so the MSP has the node-OU structure Fabric
+# expects, and so Phase 1 can start it without regenerating identities.
+PeerOrgs:
+  - Name: Org3
+    Domain: org3.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+    Users:
+      Count: 1
