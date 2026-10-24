@@ -4,13 +4,17 @@
 
 # Python
 .venv/
+# Regenerate with: python agent/data/generate.py --out flows.csv
+agent/data/flows.csv
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 
-# DRUNIX upstream, cloned alongside and never vendored
+# DRUNIX upstream is cloned to ~/.tributary-pilot, outside the repo entirely.
+# This entry only covers an older layout or an explicit DRUNIX_DIR override.
 /network/.drunix/
 /network/.env
+/network/log.txt
 
 # macOS
 .DS_Store
