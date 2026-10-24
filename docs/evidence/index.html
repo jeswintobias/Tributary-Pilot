@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tributary Pilot — Settlement Evidence</title>
+<meta name="description" content="Captured output from the Phase 0 verification runs: atomic settlement, refund on expiry, and two access-control refusals on a live DRUNIX network.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* Layout: a vertical evidence dossier — provenance banner, then each claim as a
+   ledger entry showing the chaincode's own output beneath it. */
+:root {
+  --paper: #f6f8f8;
+  --surface: #ffffff;
+  --ink: #131a1d;
+  --ink-soft: #58666d;
+  --rule: #dce3e5;
+  --accent: #0d6b6e;
+  --accent-soft: #e2efef;
+  --verified: #1a6b3c;
+  --verified-soft: #e5f1ea;
+  --refused: #a32a24;
+  --refused-soft: #fae9e8;
+  --code-bg: #f0f4f4;
+
+  --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0d1215;
+    --surface: #151d21;
+    --ink: #e5ecee;
+    --ink-soft: #92a1a8;
+    --rule: #253139;
+    --accent: #4fb3b3;
+    --accent-soft: #102e2e;
+    --verified: #5cc08a;
+    --verified-soft: #0e2a1c;
+    --refused: #e8837c;
+    --refused-soft: #2d1413;
+    --code-bg: #10181c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0d1215;
+  --surface: #151d21;
+  --ink: #e5ecee;
+  --ink-soft: #92a1a8;
+  --rule: #253139;
+  --accent: #4fb3b3;
+  --accent-soft: #102e2e;
+  --verified: #5cc08a;
+  --verified-soft: #0e2a1c;
+  --refused: #e8837c;
+  --refused-soft: #2d1413;
+  --code-bg: #10181c;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+}
+img { max-width: 100%; }
+
+.wrap {
+  max-width: 60rem;
+  margin-inline: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0;
+}
+
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(1.9rem, 1.3rem + 2.4vw, 2.9rem); font-weight: 600; letter-spacing: -0.012em; line-height: 1.15; }
+h2 { font-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.6rem); font-weight: 600; }
+h3 { font-size: 1.02rem; font-weight: 600; font-family: var(--font-body); }
+p { margin: 0; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ---------- masthead ---------- */
+.masthead { border-bottom: 1px solid var(--rule); background: var(--surface); }
+.masthead .wrap { padding-block: clamp(2rem, 5vw, 3.2rem); display: flex; flex-direction: column; gap: 1rem; }
+.lede { color: var(--ink-soft); max-width: 62ch; font-size: 1.05rem; }
+
+.provenance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+.prov-cell { background: var(--surface); padding: 0.85rem 1rem; min-width: 0; }
+.prov-k {
+  font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-soft); display: block; margin-bottom: 0.3rem;
+}
+.prov-v { font-family: var(--font-mono); font-size: 0.86rem; font-weight: 500; overflow-wrap: anywhere; }
+
+/* ---------- sections ---------- */
+section { border-bottom: 1px solid var(--rule); }
+section .wrap { padding-block: clamp(2.2rem, 5vw, 3.4rem); display: flex; flex-direction: column; gap: 1.4rem; }
+.sec-head { display: flex; flex-direction: column; gap: 0.5rem; }
+.sec-head p { color: var(--ink-soft); max-width: 68ch; }
+
+/* ---------- lifecycle ---------- */
+.steps { display: flex; flex-direction: column; gap: 0.9rem; }
+.step {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  padding: 1rem 1.1rem;
+  display: flex; flex-direction: column; gap: 0.7rem;
+  min-width: 0;
+}
+.step.is-terminal { border-left-color: var(--verified); }
+.step.is-void { border-left-color: var(--ink-soft); }
+.step-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 0.9rem; }
+.state {
+  font-family: var(--font-mono); font-weight: 600; font-size: 0.82rem;
+  letter-spacing: 0.08em; padding: 0.18rem 0.5rem; border-radius: 2px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.step.is-terminal .state { background: var(--verified-soft); color: var(--verified); }
+.step.is-void .state { background: var(--code-bg); color: var(--ink-soft); }
+.step-call { font-family: var(--font-mono); font-size: 0.86rem; color: var(--ink); }
+.step-note { color: var(--ink-soft); font-size: 0.93rem; max-width: 66ch; }
+
+pre {
+  margin: 0; background: var(--code-bg); border-radius: 3px;
+  padding: 0.75rem 0.85rem; overflow-x: auto;
+  font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.65;
+  color: var(--ink); border: 1px solid var(--rule);
+}
+pre b { font-weight: 600; color: var(--accent); }
+pre .ok { font-weight: 600; color: var(--verified); }
+pre .no { font-weight: 600; color: var(--refused); }
+
+/* ---------- tables ---------- */
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+caption {
+  text-align: left; padding: 0.8rem 1rem; color: var(--ink-soft);
+  font-size: 0.86rem; border-bottom: 1px solid var(--rule);
+}
+th, td { padding: 0.6rem 1rem; text-align: left; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+thead th {
+  font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-soft); font-weight: 500;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+td.acct { font-family: var(--font-mono); font-size: 0.82rem; }
+.delta-up { color: var(--verified); font-weight: 600; }
+.delta-down { color: var(--accent); font-weight: 600; }
+.delta-flat { color: var(--ink-soft); }
+
+/* ---------- refusal cards ---------- */
+.refusals { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.9rem; }
+.refusal {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-top: 3px solid var(--refused); border-radius: 3px;
+  padding: 0.95rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; min-width: 0;
+}
+.refusal.is-allowed { border-top-color: var(--verified); }
+.badge {
+  align-self: flex-start; font-family: var(--font-mono); font-size: 0.68rem;
+  letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+  padding: 0.2rem 0.45rem; border-radius: 2px;
+  background: var(--refused-soft); color: var(--refused);
+}
+.refusal.is-allowed .badge { background: var(--verified-soft); color: var(--verified); }
+.refusal code {
+  font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- figures ---------- */
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.9rem; }
+.figure {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+  padding: 0.95rem 1rem; display: flex; flex-direction: column; gap: 0.3rem; min-width: 0;
+}
+.figure-v {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 1.5rem; font-weight: 600; color: var(--accent); line-height: 1.1;
+}
+.figure-k { font-size: 0.86rem; color: var(--ink); }
+.figure-n { font-size: 0.8rem; color: var(--ink-soft); }
+
+/* ---------- limits ---------- */
+.limits { display: flex; flex-direction: column; gap: 0.7rem; margin: 0; padding: 0; list-style: none; }
+.limits li {
+  position: relative; padding-left: 1.5rem;
+  color: var(--ink-soft); max-width: 72ch; font-size: 0.95rem;
+}
+.limits li::before {
+  content: "—"; position: absolute; left: 0; top: 0;
+  color: var(--accent); font-family: var(--font-mono);
+}
+.limits b { color: var(--ink); font-weight: 600; }
+
+footer { background: var(--surface); }
+footer .wrap { padding-block: 2rem; color: var(--ink-soft); font-size: 0.86rem; display: flex; flex-direction: column; gap: 0.5rem; }
+footer a { color: var(--accent); }
+.mono-inline { font-family: var(--font-mono); font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <span class="eyebrow">Tributary Pilot · Phase 0 · DRUNIX</span>
+    <h1>What actually ran</h1>
+    <p class="lede">
+      Every figure below is copied from the terminal output of two verification runs
+      against a live DRUNIX network. Nothing here is mocked, and nothing is an
+      illustration of how the system would behave. Re-run the scripts and you get
+      these states back.
+    </p>
+    <div class="provenance">
+      <div class="prov-cell">
+        <span class="prov-k">Settlement run</span>
+        <span class="prov-v">down → up → deploy → demo<br>exit 0</span>
+      </div>
+      <div class="prov-cell">
+        <span class="prov-k">Access-control run</span>
+        <span class="prov-v">+ add-platform-org → verify<br>exit 0</span>
+      </div>
+      <div class="prov-cell">
+        <span class="prov-k">Platform</span>
+        <span class="prov-v">DRUNIX 1.0.0<br>HLF 2.5.x fork</span>
+      </div>
+      <div class="prov-cell">
+        <span class="prov-k">Endorsement policy</span>
+        <span class="prov-v">AND(Org1MSP.peer,<br>Org2MSP.peer)</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Claim 01 — atomicity</span>
+      <h2>Both legs move, or neither does</h2>
+      <p>
+        Ravi sends 2,200 AED from Dubai; ₹30,000 is bound to his sister's college fees.
+        The chaincode holds amounts as integers in minor units — 220,000 fils and
+        3,000,000 paise — so no floating-point value touches money at any point.
+        These are the four states the transfer passed through, as the ledger returned them.
+      </p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-top">
+          <span class="state">CAPTURED</span>
+          <span class="step-call">CreateTransfer(…)</span>
+        </div>
+        <p class="step-note">Recorded. Nothing is locked and nothing has moved. The proof hash is still empty.</p>
+<pre>{"transferID":"TP-HAPPY-1792821357","senderOrg":"Org1MSP",
+ "senderLegAmount":220000,"senderCcy":"AED",
+ "payoutOrg":"Org2MSP","payoutLegAmount":3000000,"payoutCcy":"INR",
+ "state":<b>"CAPTURED"</b>,"proofHash":<b>""</b>,
+ "createdAt":1792821373,"preparedAt":0,"resolvedAt":0}</pre>
+      </div>
+
+      <div class="step">
+        <div class="step-top">
+          <span class="state">PREPARED</span>
+          <span class="step-call">Prepare(transferID)</span>
+        </div>
+        <p class="step-note">
+          Both legs are locked against their payers and a proof hash is anchored over the
+          transfer's economic terms. Totals are untouched — only the locked column moves.
+        </p>
+<pre>{… "state":<b>"PREPARED"</b>,
+ "proofHash":<b>"e9b3ceae2483fd3b6ea59a55766d7760d5c1624ac2c21b8695ffe30558b7d639"</b>,
+ "preparedAt":1792821382}
+
+{"account":"Org1MSP","ccy":"AED","total":100000000,"locked":<b>220000</b>}
+{"account":"Org2MSP","ccy":"INR","total":1000000000,"locked":<b>3000000</b>}</pre>
+      </div>
+
+      <div class="step is-terminal">
+        <div class="step-top">
+          <span class="state">SETTLED</span>
+          <span class="step-call">Commit(transferID)</span>
+        </div>
+        <p class="step-note">
+          Guards re-checked, the anchored hash re-verified, both locks consumed and both
+          legs moved inside one transaction. Terminal — a replayed commit is refused.
+        </p>
+<pre>{… "state":<span class="ok">"SETTLED"</span>,"resolvedAt":1792821398}</pre>
+      </div>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <caption>Balances before and after the commit, in integer minor units.</caption>
+        <thead>
+          <tr><th>Account</th><th>Ccy</th><th>Before</th><th>After</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="acct">Org1MSP <span class="figure-n">SenderOrg</span></td>
+            <td class="acct">AED</td>
+            <td class="num">100,000,000</td>
+            <td class="num">99,780,000</td>
+            <td class="num delta-down">−220,000</td>
+          </tr>
+          <tr>
+            <td class="acct">Org2MSP <span class="figure-n">PayoutBank</span></td>
+            <td class="acct">AED</td>
+            <td class="num">0</td>
+            <td class="num">220,000</td>
+            <td class="num delta-up">+220,000</td>
+          </tr>
+          <tr>
+            <td class="acct">Org2MSP <span class="figure-n">PayoutBank</span></td>
+            <td class="acct">INR</td>
+            <td class="num">1,000,000,000</td>
+            <td class="num">997,000,000</td>
+            <td class="num delta-down">−3,000,000</td>
+          </tr>
+          <tr>
+            <td class="acct">sha256:collegefees… <span class="figure-n">beneficiary</span></td>
+            <td class="acct">INR</td>
+            <td class="num">0</td>
+            <td class="num">3,000,000</td>
+            <td class="num delta-up">+3,000,000</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="step-note">
+      The beneficiary is a salted hash computed off-chain. No personally identifying
+      information is written to the ledger anywhere in this design.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Claim 02 — refund on timeout</span>
+      <h2>An expired transfer refunds in full</h2>
+      <p>
+        A second transfer was prepared and then left to expire. Abort releases both locks
+        and leaves every total exactly as it was — the counterparty is never stranded.
+      </p>
+    </div>
+
+    <div class="steps">
+      <div class="step is-void">
+        <div class="step-top">
+          <span class="state">ABORTED</span>
+          <span class="step-call">Abort(transferID)</span>
+        </div>
+<pre>locked while PREPARED
+{"account":"Org1MSP","ccy":"AED","total":99780000,"locked":<b>110000</b>}
+
+after Abort — state <span class="ok">"ABORTED"</span>
+{"account":"Org1MSP","ccy":"AED","total":<span class="ok">99780000</span>,"locked":<span class="ok">0</span>}
+{"account":"Org2MSP","ccy":"INR","total":<span class="ok">997000000</span>,"locked":<span class="ok">0</span>}
+{"account":"sha256:collegefees…","ccy":"INR","total":<span class="ok">3000000</span>}</pre>
+        <p class="step-note">
+          Totals unchanged, locks released, and the beneficiary balance untouched by the
+          abort — it still holds only the ₹30,000 from the settled transfer.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Claim 03 — access control</span>
+      <h2>Two ways to settle a transfer you shouldn't, both refused</h2>
+      <p>
+        These are the controls the design rests on, and neither can be demonstrated against
+        a mock. Both were run against the live network.
+      </p>
+    </div>
+
+    <h3>One organisation acting alone</h3>
+    <p class="step-note">
+      A <span class="mono-inline">Commit</span> endorsed only by Org1MSP was submitted and ordered.
+      The Validation Service rejected it, so the ledger never changed.
+    </p>
+<pre><span class="ok">OK: single-org commit did not take effect — state is still PREPARED</span></pre>
+
+    <h3 style="margin-top:0.6rem">An organisation that is not a party</h3>
+    <p class="step-note">
+      PlatformOrg (Org3MSP) is the NPCI platform node and regulator observer — a full
+      channel member with Writer rights, so its proposals reach the chaincode rather than
+      being stopped by a channel ACL. The contract's own party check is what turns them away.
+    </p>
+
+    <div class="refusals">
+      <div class="refusal">
+        <span class="badge">Refused</span>
+        <h3>Commit</h3>
+        <code>caller Org3MSP is not a party to transfer</code>
+      </div>
+      <div class="refusal">
+        <span class="badge">Refused</span>
+        <h3>Abort</h3>
+        <code>caller Org3MSP is not a party to transfer</code>
+      </div>
+      <div class="refusal">
+        <span class="badge">Refused</span>
+        <h3>Prepare</h3>
+        <code>caller Org3MSP is not a party to transfer</code>
+      </div>
+      <div class="refusal is-allowed">
+        <span class="badge">Allowed</span>
+        <h3>GetTransfer</h3>
+        <code>reads the transfer, unchanged at PREPARED — a regulator observer should be able to look</code>
+      </div>
+    </div>
+
+    <p class="step-note">
+      The verification script fails loudly if a refusal comes from anywhere other than the
+      contract's party check. A channel-level rejection would be a false pass, and would
+      hide whether the chaincode's own access control works.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Claim 04 — modelled, on synthetic data</span>
+      <h2>Pooling and netting, at matched risk</h2>
+      <p>
+        These come from the forecasting notebook, not from the ledger. The data is
+        synthetic and generated by a script in this repository. They are modelled
+        estimates under stated assumptions, not measurements of any real corridor.
+      </p>
+    </div>
+
+    <div class="figures">
+      <div class="figure">
+        <span class="figure-v">37.2%</span>
+        <span class="figure-k">Buffer reduction</span>
+        <span class="figure-n">Shared netted pool vs separate per-provider buffers, 4h window, matched 1% shortfall risk</span>
+      </div>
+      <div class="figure">
+        <span class="figure-v">13.9–43.8%</span>
+        <span class="figure-k">Across the grid</span>
+        <span class="figure-n">The same comparison over every window and quantile tested — the range, not the flattering point</span>
+      </div>
+      <div class="figure">
+        <span class="figure-v">1.01%</span>
+        <span class="figure-k">Realised shortfall, both designs</span>
+        <span class="figure-n">Against a 1% target — the check that the comparison really was like-for-like</span>
+      </div>
+      <div class="figure">
+        <span class="figure-v">0.86–0.88</span>
+        <span class="figure-k">P90 coverage</span>
+        <span class="figure-n">Against a nominal 0.90. The model is mildly under-dispersed, so a pool sized to this P90 runs short slightly more often than advertised</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Limits</span>
+      <h2>What this page does not show</h2>
+      <p>
+        The point of collecting evidence is to be clear about where it stops.
+      </p>
+    </div>
+    <ul class="limits">
+      <li><b>No throughput or latency figure.</b> Nothing has been benchmarked, and it could not be measured honestly here — DRUNIX publishes amd64 images only, so every container ran emulated on Apple silicon.</li>
+      <li><b>One ledger, not two.</b> Cross-chain proof verification is stubbed as a locally anchored hash. The atomicity argument holds for the state machine but has not been shown across two networks.</li>
+      <li><b>PlatformOrg runs no peer.</b> It is a channel member with an identity and read access, which is what a regulator observer needs. Its own nodes are Phase 1.</li>
+      <li><b>No rupee or dollar saving is claimed.</b> The figures above are a buffer ratio on synthetic data; converting one into money needs a balance-sheet size and a cost of capital this project does not have.</li>
+      <li><b>Token, pool, policy, attestation and payout contracts do not exist yet.</b> Phase 0 implements settlement only. Balances come from a minimal in-contract map that the token contract replaces.</li>
+      <li><b>The endorsement policy is chaincode-wide.</b> Fabric applies it to every function rather than only to Commit; narrowing it needs state-based endorsement.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>
+      Reproduce any of this with
+      <span class="mono-inline">./network/up.sh</span> ·
+      <span class="mono-inline">./network/deploy-cc.sh settlement</span> ·
+      <span class="mono-inline">./network/demo.sh</span> ·
+      <span class="mono-inline">./network/add-platform-org.sh</span> ·
+      <span class="mono-inline">./network/verify-platformorg.sh</span>
+    </p>
+    <p>
+      Status table and full caveats in the
+      <a href="../../README.md">README</a>;
+      threats mapped to controls and tests in the
+      <a href="../THREAT_MODEL.md">threat model</a>.
+      All customer and flow data is synthetic.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
