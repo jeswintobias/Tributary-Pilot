@@ -33,9 +33,11 @@ Four layers on DRUNIX, NPCI's enhanced fork of Hyperledger Fabric v2.5.x:
    purpose, split it across family members, and set a deadline with automatic
    refund. Modelled on RBI's Special Purpose e₹ concept.
 
-Settlement follows NPCI's cross-chain **two-phase commit**: capture → prepare
-(lock both legs, anchor proof) → verify → commit, or abort with refund on timeout.
-Both legs complete or neither does, which removes Herstatt risk.
+Settlement follows NPCI's cross-chain **two-phase commit**: capture → **accept**
+→ prepare (lock both legs, anchor proof) → verify → commit, or abort with refund
+on timeout. Both legs complete or neither does, which removes Herstatt risk. The
+accept step is what stops one party locking the other's liquidity without
+agreement.
 
 **Running example, used throughout the docs and the demo:** Ravi in Dubai sends
 2,200 AED. ₹30,000 must reach his sister's college; the rest goes to his mother in
@@ -49,8 +51,8 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — 2PC state machine | **Done** | 26 unit tests, `cd chaincode/settlement && go test ./...` |
-| P0.4a | Go unit tests with mock stub | **Done** | 26 tests passing, 76.3% statement coverage |
+| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 39 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 39 tests passing, 77.5% statement coverage |
 | P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
 | P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
 | P0.4b | Live happy-path and abort-path demo | **Done** | `./network/demo.sh` — settles on-chain; single-org commit refused |
@@ -66,6 +68,23 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 None will until it is measured, and it cannot be measured honestly here: DRUNIX
 publishes `linux/amd64` images only, so on this Apple-silicon machine every
 container runs emulated. Benchmarking belongs on amd64 Linux with Caliper.
+
+### Fixed after external review
+
+Two real defects were found when a reviewer read the contract against Fabric's
+actual semantics. Both are fixed, both have regression tests, and both are
+written up in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md):
+
+1. **Fabric gives chaincode no read-your-writes.** `SetState` appends to the
+   write set; `GetState` reads the state database and never consults it. `Commit`
+   settles two legs, and where both touched the same account and currency the
+   second read a stale balance and overwrote the first — creating value when an
+   account paid itself, destroying it in the reverse order. The test mock applied
+   writes immediately, so all 26 tests passed over it. The mock now reproduces
+   Fabric's semantics, and balances go through one per-transaction `balanceBook`.
+2. **The sender alone could lock the payout bank's funds**, with an unbounded
+   expiry, and the bank could not abort until that expiry passed. `Accept` and a
+   900-second settlement window close it.
 
 ### Evidence page
 
@@ -87,6 +106,8 @@ Shown, and reproducible with the scripts above:
 - A transfer settles atomically on-chain: 2,200 AED (220,000 fils) moves from
   `SenderOrg` to `PayoutBankOrg` and ₹30,000 (3,000,000 paise) moves from
   `PayoutBankOrg` to the beneficiary reference, in one transaction.
+- **`Prepare` before `Accept` is refused**, so the sending organisation cannot
+  lock the payout bank's liquidity on its own.
 - **A `Commit` endorsed by one organisation alone does not take effect** — the
   transfer stays `PREPARED`. This is threat T2.2, and it could only ever be
   proven on a live network.

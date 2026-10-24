@@ -16,47 +16,65 @@ import (
 // stub method we have not thought about, a test fails loudly instead of quietly
 // returning a zero value.
 
+// mockStub reproduces Fabric's transaction semantics, which are easy to get
+// wrong in a mock and which this contract depends on:
+//
+//   - PutState does NOT update the state a later GetState in the SAME
+//     transaction reads. Fabric's txSimulator.SetState only appends to the
+//     transaction's write set, while queryExecutor.GetState reads the state
+//     database directly. There is no read-your-writes.
+//   - A transaction that returns an error commits nothing at all; its whole
+//     write set is discarded.
+//
+// An earlier version of this mock applied writes immediately, which made a real
+// double-credit bug in Commit invisible to every test. Keep these semantics.
 type mockStub struct {
 	shim.ChaincodeStubInterface
 
-	state  map[string][]byte
-	events map[string][]byte
-	now    int64
+	committed map[string][]byte // what GetState sees
+	pending   map[string][]byte // this transaction's write set
+	events    map[string][]byte // committed events
+	pendingEv map[string][]byte
+	now       int64
 
-	// getStateErr, when set, makes the next GetState for that exact key fail.
+	// getStateErr, when set, makes GetState for that exact key fail.
 	getStateErr map[string]error
 }
 
 func newMockStub(now int64) *mockStub {
 	return &mockStub{
-		state:       map[string][]byte{},
+		committed:   map[string][]byte{},
+		pending:     map[string][]byte{},
 		events:      map[string][]byte{},
+		pendingEv:   map[string][]byte{},
 		now:         now,
 		getStateErr: map[string]error{},
 	}
 }
 
+// GetState reads committed state only — never this transaction's own writes.
 func (m *mockStub) GetState(key string) ([]byte, error) {
 	if err, ok := m.getStateErr[key]; ok {
 		return nil, err
 	}
-	v, ok := m.state[key]
+	v, ok := m.committed[key]
 	if !ok {
 		return nil, nil
 	}
 	return v, nil
 }
 
+// PutState appends to the write set. It becomes visible only once the
+// transaction commits.
 func (m *mockStub) PutState(key string, value []byte) error {
-	// Copy so a later mutation of the caller's slice cannot reach stored state.
 	buf := make([]byte, len(value))
 	copy(buf, value)
-	m.state[key] = buf
+	m.pending[key] = buf
 	return nil
 }
 
 func (m *mockStub) DelState(key string) error {
-	delete(m.state, key)
+	m.pending[key] = nil
 	return nil
 }
 
@@ -71,11 +89,35 @@ func (m *mockStub) GetTxTimestamp() (*timestamppb.Timestamp, error) {
 }
 
 func (m *mockStub) SetEvent(name string, payload []byte) error {
-	m.events[name] = payload
+	m.pendingEv[name] = payload
 	return nil
 }
 
 func (m *mockStub) GetTxID() string { return "mock-tx" }
+
+// commitTx applies the write set, as a peer does for a valid transaction.
+func (m *mockStub) commitTx() {
+	for k, v := range m.pending {
+		if v == nil {
+			delete(m.committed, k)
+			continue
+		}
+		m.committed[k] = v
+	}
+	for k, v := range m.pendingEv {
+		m.events[k] = v
+	}
+	m.resetTx()
+}
+
+// discardTx throws the write set away, as a peer does for a transaction whose
+// chaincode returned an error.
+func (m *mockStub) discardTx() { m.resetTx() }
+
+func (m *mockStub) resetTx() {
+	m.pending = map[string][]byte{}
+	m.pendingEv = map[string][]byte{}
+}
 
 type mockClientIdentity struct {
 	cid.ClientIdentity
@@ -98,7 +140,7 @@ func (m *mockContext) GetClientIdentity() cid.ClientIdentity { return m.identity
 // ---------------------------------------------------------------------------
 
 // ledger is one shared state map that several differently-signed contexts can
-// act on, which is how we simulate two organisations transacting on one channel.
+// act on, which is how we simulate organisations transacting on one channel.
 type ledger struct {
 	t    *testing.T
 	stub *mockStub
@@ -120,6 +162,57 @@ func (l *ledger) as(mspID string) contractapi.TransactionContextInterface {
 // this same value, which is the property GetTxTimestamp() gives us on a real
 // network.
 func (l *ledger) at(unixSeconds int64) { l.stub.now = unixSeconds }
+
+// invoke runs one state-changing call as one transaction: the write set is
+// applied on success and thrown away on error. Every test goes through this, so
+// no test can accidentally rely on writes that Fabric would have discarded.
+func (l *ledger) invoke(org string, call func(contractapi.TransactionContextInterface) error) error {
+	err := call(l.as(org))
+	if err != nil {
+		l.stub.discardTx()
+	} else {
+		l.stub.commitTx()
+	}
+	return err
+}
+
+func (l *ledger) seed(org, ccy string, amount uint64) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.SeedBalance(c, ccy, amount)
+	})
+}
+
+func (l *ledger) create(org, transferID string, senderAmt uint64, senderCcy string,
+	payoutAmt uint64, payoutCcy, quote string, expires int64, payoutOrg, payee string) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.CreateTransfer(c, transferID, senderAmt, senderCcy,
+			payoutAmt, payoutCcy, quote, expires, payoutOrg, payee)
+	})
+}
+
+func (l *ledger) accept(org, transferID string) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.Accept(c, transferID)
+	})
+}
+
+func (l *ledger) prepare(org, transferID string) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.Prepare(c, transferID)
+	})
+}
+
+func (l *ledger) commit(org, transferID string) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.Commit(c, transferID)
+	})
+}
+
+func (l *ledger) abort(org, transferID string) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.Abort(c, transferID)
+	})
+}
 
 func (l *ledger) balance(account, ccy string) Balance {
 	l.t.Helper()

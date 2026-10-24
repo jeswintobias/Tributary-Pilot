@@ -29,17 +29,17 @@ const (
 	transferID = "TP-UAE-IN-0001"
 
 	t0        int64 = 1_761_300_000 // simulated tx time
-	expiresAt int64 = t0 + 900      // 15-minute quote validity
+	expiresAt int64 = t0 + 900      // 15-minute quote validity, the maximum window
 )
 
 // fund seeds both payers with comfortable balances and returns the ledger.
 func fundedLedger(t *testing.T) *ledger {
 	t.Helper()
 	l := newLedger(t, t0)
-	if err := l.sc.SeedBalance(l.as(senderOrg), aed, 1_000_000); err != nil {
+	if err := l.seed(senderOrg, aed, 1_000_000); err != nil {
 		t.Fatalf("seed sender: %v", err)
 	}
-	if err := l.sc.SeedBalance(l.as(payoutOrg), inr, 10_000_000); err != nil {
+	if err := l.seed(payoutOrg, inr, 10_000_000); err != nil {
 		t.Fatalf("seed payout bank: %v", err)
 	}
 	return l
@@ -47,13 +47,8 @@ func fundedLedger(t *testing.T) *ledger {
 
 func create(t *testing.T, l *ledger) error {
 	t.Helper()
-	return l.sc.CreateTransfer(
-		l.as(senderOrg), transferID,
-		senderLeg, aed,
-		payoutLeg, inr,
-		quoteID, expiresAt,
-		payoutOrg, payeeRef,
-	)
+	return l.create(senderOrg, transferID, senderLeg, aed,
+		payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef)
 }
 
 func mustCreate(t *testing.T, l *ledger) {
@@ -63,11 +58,26 @@ func mustCreate(t *testing.T, l *ledger) {
 	}
 }
 
+func mustAccept(t *testing.T, l *ledger) {
+	t.Helper()
+	if err := l.accept(payoutOrg, transferID); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+}
+
 func mustPrepare(t *testing.T, l *ledger) {
 	t.Helper()
-	if err := l.sc.Prepare(l.as(senderOrg), transferID); err != nil {
+	if err := l.prepare(senderOrg, transferID); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
+}
+
+// readyToCommit drives a transfer all the way to PREPARED.
+func readyToCommit(t *testing.T, l *ledger) {
+	t.Helper()
+	mustCreate(t, l)
+	mustAccept(t, l)
+	mustPrepare(t, l)
 }
 
 func requireErrContains(t *testing.T, err error, want string) {
@@ -90,6 +100,15 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 
 	if got := l.transfer(transferID).State; got != StateCaptured {
 		t.Fatalf("after CreateTransfer state = %s, want %s", got, StateCaptured)
+	}
+
+	mustAccept(t, l)
+	if got := l.transfer(transferID).State; got != StateAccepted {
+		t.Fatalf("after Accept state = %s, want %s", got, StateAccepted)
+	}
+	// Acceptance is consent to the terms, not a movement of value.
+	if got := l.balance(payoutOrg, inr).Locked; got != 0 {
+		t.Fatalf("Accept locked %d; it must lock nothing", got)
 	}
 
 	mustPrepare(t, l)
@@ -115,7 +134,7 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 
 	// Commit is submitted by the counterparty, which is the realistic direction:
 	// the payout bank releases once it can see the prepared sender leg.
-	if err := l.sc.Commit(l.as(payoutOrg), transferID); err != nil {
+	if err := l.commit(payoutOrg, transferID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
@@ -139,7 +158,7 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 	}
 
 	// An event was emitted for every state change.
-	for _, name := range []string{EventCaptured, EventPrepared, EventSettled} {
+	for _, name := range []string{EventCaptured, EventAccepted, EventPrepared, EventSettled} {
 		if l.lastEvent(name) == nil {
 			t.Errorf("no %s event emitted", name)
 		}
@@ -160,11 +179,12 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 func TestCommit_WithoutPrepare_Fails(t *testing.T) {
 	l := fundedLedger(t)
 	mustCreate(t, l)
+	mustAccept(t, l)
 
-	err := l.sc.Commit(l.as(payoutOrg), transferID)
+	err := l.commit(payoutOrg, transferID)
 	requireErrContains(t, err, "Commit requires PREPARED")
 
-	if got := l.transfer(transferID).State; got != StateCaptured {
+	if got := l.transfer(transferID).State; got != StateAccepted {
 		t.Fatalf("state changed to %s on a rejected Commit", got)
 	}
 	if got := l.balance(payeeRef, inr); got.Total != 0 {
@@ -178,16 +198,13 @@ func TestCommit_WithoutPrepare_Fails(t *testing.T) {
 
 func TestCommit_AfterExpiry_Fails(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
 	l.at(expiresAt) // exactly at expiry: the boundary is inclusive-refusing
-	err := l.sc.Commit(l.as(payoutOrg), transferID)
-	requireErrContains(t, err, "expired")
+	requireErrContains(t, l.commit(payoutOrg, transferID), "expired")
 
 	l.at(expiresAt + 3600)
-	err = l.sc.Commit(l.as(payoutOrg), transferID)
-	requireErrContains(t, err, "expired")
+	requireErrContains(t, l.commit(payoutOrg, transferID), "expired")
 
 	if got := l.transfer(transferID).State; got != StatePrepared {
 		t.Fatalf("state = %s after refused Commit, want %s", got, StatePrepared)
@@ -206,16 +223,15 @@ func TestCreateTransfer_DuplicateID_Rejected(t *testing.T) {
 	l := fundedLedger(t)
 	mustCreate(t, l)
 
-	err := create(t, l)
-	requireErrContains(t, err, "already exists")
+	requireErrContains(t, create(t, l), "already exists")
 
 	// Also rejected once the first one has settled: the ID is not recycled.
+	mustAccept(t, l)
 	mustPrepare(t, l)
-	if err := l.sc.Commit(l.as(payoutOrg), transferID); err != nil {
+	if err := l.commit(payoutOrg, transferID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	err = create(t, l)
-	requireErrContains(t, err, "already exists")
+	requireErrContains(t, create(t, l), "already exists")
 
 	if got := l.balance(payeeRef, inr); got.Total != payoutLeg {
 		t.Fatalf("payee paid %d, want exactly one payout of %d", got.Total, payoutLeg)
@@ -229,37 +245,33 @@ func TestCreateTransfer_DuplicateID_Rejected(t *testing.T) {
 func TestPrepare_InsufficientAvailable_Fails(t *testing.T) {
 	l := newLedger(t, t0)
 	// Exactly one sender leg's worth of AED, and plenty of INR.
-	if err := l.sc.SeedBalance(l.as(senderOrg), aed, senderLeg); err != nil {
+	if err := l.seed(senderOrg, aed, senderLeg); err != nil {
 		t.Fatalf("seed sender: %v", err)
 	}
-	if err := l.sc.SeedBalance(l.as(payoutOrg), inr, 10_000_000); err != nil {
+	if err := l.seed(payoutOrg, inr, 10_000_000); err != nil {
 		t.Fatalf("seed payout bank: %v", err)
 	}
 
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
 	// A second transfer against the same funds must not be preparable.
 	second := transferID + "-B"
-	if err := l.sc.CreateTransfer(
-		l.as(senderOrg), second,
-		senderLeg, aed,
-		payoutLeg, inr,
-		quoteID, expiresAt,
-		payoutOrg, payeeRef,
-	); err != nil {
+	if err := l.create(senderOrg, second, senderLeg, aed,
+		payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef); err != nil {
 		t.Fatalf("CreateTransfer second: %v", err)
 	}
+	if err := l.accept(payoutOrg, second); err != nil {
+		t.Fatalf("Accept second: %v", err)
+	}
 
-	err := l.sc.Prepare(l.as(senderOrg), second)
-	requireErrContains(t, err, "available")
+	requireErrContains(t, l.prepare(senderOrg, second), "available")
 
 	// The first transfer's lock is intact and the second took nothing.
 	if got := l.balance(senderOrg, aed); got.Total != senderLeg || got.Locked != senderLeg {
 		t.Fatalf("sender = %+v, want total %d locked %d", got, senderLeg, senderLeg)
 	}
-	if got := l.transfer(second).State; got != StateCaptured {
-		t.Fatalf("second transfer state = %s, want %s", got, StateCaptured)
+	if got := l.transfer(second).State; got != StateAccepted {
+		t.Fatalf("second transfer state = %s, want %s", got, StateAccepted)
 	}
 }
 
@@ -269,11 +281,10 @@ func TestPrepare_InsufficientAvailable_Fails(t *testing.T) {
 
 func TestAbort_AfterExpiry_RefundsBothLegs(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
 	l.at(expiresAt + 1)
-	if err := l.sc.Abort(l.as(payoutOrg), transferID); err != nil {
+	if err := l.abort(payoutOrg, transferID); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
 
@@ -293,35 +304,49 @@ func TestAbort_AfterExpiry_RefundsBothLegs(t *testing.T) {
 	}
 
 	// Terminal: it cannot then be committed.
-	err := l.sc.Commit(l.as(payoutOrg), transferID)
-	requireErrContains(t, err, "Commit requires PREPARED")
+	requireErrContains(t, l.commit(payoutOrg, transferID), "Commit requires PREPARED")
 }
 
-func TestAbort_Captured_NeedsNoExpiry(t *testing.T) {
-	l := fundedLedger(t)
-	mustCreate(t, l)
+func TestAbort_BeforeAnyLock_NeedsNoExpiry(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		accept bool
+		state  string
+	}{
+		{"captured", false, StateCaptured},
+		{"accepted", true, StateAccepted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := fundedLedger(t)
+			mustCreate(t, l)
+			if tc.accept {
+				mustAccept(t, l)
+			}
+			if got := l.transfer(transferID).State; got != tc.state {
+				t.Fatalf("state = %s, want %s", got, tc.state)
+			}
 
-	// Nothing is locked in CAPTURED, so either party may walk away immediately.
-	if err := l.sc.Abort(l.as(senderOrg), transferID); err != nil {
-		t.Fatalf("Abort of a CAPTURED transfer: %v", err)
-	}
-	if got := l.transfer(transferID).State; got != StateAborted {
-		t.Fatalf("state = %s, want %s", got, StateAborted)
-	}
-	if got := l.balance(senderOrg, aed); got.Locked != 0 || got.Total != 1_000_000 {
-		t.Fatalf("sender disturbed by aborting a CAPTURED transfer: %+v", got)
+			// Nothing is locked yet, so either party may walk away immediately.
+			if err := l.abort(senderOrg, transferID); err != nil {
+				t.Fatalf("Abort of a %s transfer: %v", tc.state, err)
+			}
+			if got := l.transfer(transferID).State; got != StateAborted {
+				t.Fatalf("state = %s, want %s", got, StateAborted)
+			}
+			if got := l.balance(senderOrg, aed); got.Locked != 0 || got.Total != 1_000_000 {
+				t.Fatalf("sender disturbed by the abort: %+v", got)
+			}
+		})
 	}
 }
 
 func TestAbort_PreparedBeforeExpiry_Refused(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
 	// Unilateral early abort would strand the counterparty, which has locked
 	// funds in good faith. See the Abort doc comment.
-	err := l.sc.Abort(l.as(senderOrg), transferID)
-	requireErrContains(t, err, "unilateral early abort is refused")
+	requireErrContains(t, l.abort(senderOrg, transferID), "unilateral early abort is refused")
 
 	if got := l.transfer(transferID).State; got != StatePrepared {
 		t.Fatalf("state = %s, want %s", got, StatePrepared)
@@ -334,11 +359,9 @@ func TestAbort_PreparedBeforeExpiry_Refused(t *testing.T) {
 
 func TestCommit_UnauthorizedOrg_Fails(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
-	err := l.sc.Commit(l.as(otherOrg), transferID)
-	requireErrContains(t, err, "is not a party to transfer")
+	requireErrContains(t, l.commit(otherOrg, transferID), "is not a party to transfer")
 
 	if got := l.transfer(transferID).State; got != StatePrepared {
 		t.Fatalf("a non-party moved the transfer to %s", got)
@@ -351,12 +374,13 @@ func TestCommit_UnauthorizedOrg_Fails(t *testing.T) {
 func TestPrepareAndAbort_UnauthorizedOrg_Fails(t *testing.T) {
 	l := fundedLedger(t)
 	mustCreate(t, l)
+	mustAccept(t, l)
 
-	requireErrContains(t, l.sc.Prepare(l.as(otherOrg), transferID), "is not a party to transfer")
+	requireErrContains(t, l.prepare(otherOrg, transferID), "is not a party to transfer")
 
 	mustPrepare(t, l)
 	l.at(expiresAt + 1)
-	requireErrContains(t, l.sc.Abort(l.as(otherOrg), transferID), "is not a party to transfer")
+	requireErrContains(t, l.abort(otherOrg, transferID), "is not a party to transfer")
 }
 
 func TestCreateTransfer_SenderOrgComesFromIdentity(t *testing.T) {
@@ -370,11 +394,8 @@ func TestCreateTransfer_SenderOrgComesFromIdentity(t *testing.T) {
 	}
 
 	// And an org cannot name itself as both parties.
-	err := l.sc.CreateTransfer(
-		l.as(senderOrg), transferID+"-self",
-		senderLeg, aed, payoutLeg, inr, quoteID, expiresAt,
-		senderOrg, payeeRef,
-	)
+	err := l.create(senderOrg, transferID+"-self", senderLeg, aed,
+		payoutLeg, inr, quoteID, expiresAt, senderOrg, payeeRef)
 	requireErrContains(t, err, "must differ")
 }
 
@@ -388,24 +409,23 @@ func TestAmounts_IntegerExact(t *testing.T) {
 	const huge uint64 = 9_007_199_254_740_993 // 2^53 + 1
 
 	l := newLedger(t, t0)
-	if err := l.sc.SeedBalance(l.as(senderOrg), aed, huge); err != nil {
+	if err := l.seed(senderOrg, aed, huge); err != nil {
 		t.Fatalf("seed sender: %v", err)
 	}
-	if err := l.sc.SeedBalance(l.as(payoutOrg), inr, huge); err != nil {
+	if err := l.seed(payoutOrg, inr, huge); err != nil {
 		t.Fatalf("seed payout bank: %v", err)
 	}
 	if got := l.balance(senderOrg, aed).Total; got != huge {
 		t.Fatalf("seeded %d, read back %d — precision was lost", huge, got)
 	}
 
-	if err := l.sc.CreateTransfer(
-		l.as(senderOrg), transferID,
-		huge, aed, huge, inr, quoteID, expiresAt, payoutOrg, payeeRef,
-	); err != nil {
+	if err := l.create(senderOrg, transferID, huge, aed, huge, inr,
+		quoteID, expiresAt, payoutOrg, payeeRef); err != nil {
 		t.Fatalf("CreateTransfer: %v", err)
 	}
+	mustAccept(t, l)
 	mustPrepare(t, l)
-	if err := l.sc.Commit(l.as(payoutOrg), transferID); err != nil {
+	if err := l.commit(payoutOrg, transferID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
@@ -423,22 +443,20 @@ func TestAmounts_IntegerExact(t *testing.T) {
 func TestAmounts_ZeroLegsRejected(t *testing.T) {
 	l := fundedLedger(t)
 
-	err := l.sc.CreateTransfer(l.as(senderOrg), "z1",
-		0, aed, payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef)
+	err := l.create(senderOrg, "z1", 0, aed, payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef)
 	requireErrContains(t, err, "senderLegAmount must be greater than zero")
 
-	err = l.sc.CreateTransfer(l.as(senderOrg), "z2",
-		senderLeg, aed, 0, inr, quoteID, expiresAt, payoutOrg, payeeRef)
+	err = l.create(senderOrg, "z2", senderLeg, aed, 0, inr, quoteID, expiresAt, payoutOrg, payeeRef)
 	requireErrContains(t, err, "payoutLegAmount must be greater than zero")
 }
 
 func TestSeedBalance_Overflow_Rejected(t *testing.T) {
 	l := newLedger(t, t0)
 	const max uint64 = 1<<64 - 1
-	if err := l.sc.SeedBalance(l.as(senderOrg), aed, max); err != nil {
+	if err := l.seed(senderOrg, aed, max); err != nil {
 		t.Fatalf("seed max: %v", err)
 	}
-	requireErrContains(t, l.sc.SeedBalance(l.as(senderOrg), aed, 1), "overflow")
+	requireErrContains(t, l.seed(senderOrg, aed, 1), "overflow")
 	if got := l.balance(senderOrg, aed).Total; got != max {
 		t.Fatalf("balance wrapped to %d", got)
 	}
@@ -450,14 +468,12 @@ func TestSeedBalance_Overflow_Rejected(t *testing.T) {
 
 func TestCommit_Twice_Fails(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
-	if err := l.sc.Commit(l.as(payoutOrg), transferID); err != nil {
+	readyToCommit(t, l)
+	if err := l.commit(payoutOrg, transferID); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	err := l.sc.Commit(l.as(payoutOrg), transferID)
-	requireErrContains(t, err, "Commit requires PREPARED")
+	requireErrContains(t, l.commit(payoutOrg, transferID), "Commit requires PREPARED")
 
 	if got := l.balance(payeeRef, inr); got.Total != payoutLeg {
 		t.Fatalf("payee paid %d after a double Commit, want %d", got.Total, payoutLeg)
@@ -466,11 +482,9 @@ func TestCommit_Twice_Fails(t *testing.T) {
 
 func TestPrepare_Twice_Fails(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
-	err := l.sc.Prepare(l.as(senderOrg), transferID)
-	requireErrContains(t, err, "Prepare requires CAPTURED")
+	requireErrContains(t, l.prepare(senderOrg, transferID), "Prepare requires ACCEPTED")
 
 	// The second Prepare must not have doubled the lock.
 	if got := l.balance(senderOrg, aed).Locked; got != senderLeg {
@@ -481,19 +495,32 @@ func TestPrepare_Twice_Fails(t *testing.T) {
 func TestPrepare_AfterExpiry_Fails(t *testing.T) {
 	l := fundedLedger(t)
 	mustCreate(t, l)
+	mustAccept(t, l)
 
 	l.at(expiresAt + 1)
-	requireErrContains(t, l.sc.Prepare(l.as(senderOrg), transferID), "expired")
+	requireErrContains(t, l.prepare(senderOrg, transferID), "expired")
 
 	if got := l.balance(senderOrg, aed).Locked; got != 0 {
 		t.Fatalf("an expired Prepare locked %d", got)
 	}
 }
 
+func TestAccept_AfterExpiry_Fails(t *testing.T) {
+	l := fundedLedger(t)
+	mustCreate(t, l)
+
+	l.at(expiresAt + 1)
+	requireErrContains(t, l.accept(payoutOrg, transferID), "expired")
+
+	if got := l.transfer(transferID).State; got != StateCaptured {
+		t.Fatalf("state = %s after an expired Accept, want %s", got, StateCaptured)
+	}
+}
+
 func TestCreateTransfer_ExpiryInThePast_Rejected(t *testing.T) {
 	l := fundedLedger(t)
-	err := l.sc.CreateTransfer(l.as(senderOrg), "past",
-		senderLeg, aed, payoutLeg, inr, quoteID, t0-1, payoutOrg, payeeRef)
+	err := l.create(senderOrg, "past", senderLeg, aed, payoutLeg, inr,
+		quoteID, t0-1, payoutOrg, payeeRef)
 	requireErrContains(t, err, "not in the future")
 }
 
@@ -516,8 +543,7 @@ func TestGetBalance_UnknownAccount_ReadsZero(t *testing.T) {
 
 func TestCommit_TamperedTerms_FailProofCheck(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
-	mustPrepare(t, l)
+	readyToCommit(t, l)
 
 	// Simulate state tampering between prepare and commit by rewriting the
 	// stored transfer with a larger payout leg while keeping the anchored hash.
@@ -528,29 +554,34 @@ func TestCommit_TamperedTerms_FailProofCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := l.as(senderOrg).GetStub().PutState(key, raw); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	l.stub.committed[key] = raw
 
-	err = l.sc.Commit(l.as(payoutOrg), transferID)
-	requireErrContains(t, err, "proof hash mismatch")
+	requireErrContains(t, l.commit(payoutOrg, transferID), "proof hash mismatch")
 }
 
 func TestProofHash_IsDeterministicAndFieldSensitive(t *testing.T) {
 	base := Transfer{
 		TransferID: transferID, SenderOrg: senderOrg, SenderLegAmount: senderLeg, SenderCcy: aed,
 		PayoutOrg: payoutOrg, PayoutLegAmount: payoutLeg, PayoutCcy: inr, PayoutPayeeRef: payeeRef,
-		QuoteID: quoteID, ExpiresAt: expiresAt, CreatedAt: t0, PreparedAt: t0,
+		QuoteID: quoteID, ExpiresAt: expiresAt, CreatedAt: t0, AcceptedAt: t0 + 1, PreparedAt: t0 + 2,
 	}
 	if proofHash(base) != proofHash(base) {
 		t.Fatal("proofHash is not deterministic")
 	}
 
 	// Every economic field must change the digest.
-	changed := base
-	changed.PayoutLegAmount++
-	if proofHash(changed) == proofHash(base) {
-		t.Fatal("proofHash ignores PayoutLegAmount")
+	for name, mutate := range map[string]func(*Transfer){
+		"PayoutLegAmount": func(x *Transfer) { x.PayoutLegAmount++ },
+		"SenderLegAmount": func(x *Transfer) { x.SenderLegAmount++ },
+		"PayoutPayeeRef":  func(x *Transfer) { x.PayoutPayeeRef += "x" },
+		"AcceptedAt":      func(x *Transfer) { x.AcceptedAt++ },
+		"ExpiresAt":       func(x *Transfer) { x.ExpiresAt++ },
+	} {
+		changed := base
+		mutate(&changed)
+		if proofHash(changed) == proofHash(base) {
+			t.Errorf("proofHash ignores %s", name)
+		}
 	}
 
 	// Length-prefixing must stop adjacent fields from being re-sliced into the
@@ -565,7 +596,7 @@ func TestProofHash_IsDeterministicAndFieldSensitive(t *testing.T) {
 
 func TestSeedBalance_CreditsOnlyTheCallersOwnAccount(t *testing.T) {
 	l := newLedger(t, t0)
-	if err := l.sc.SeedBalance(l.as(senderOrg), aed, 500); err != nil {
+	if err := l.seed(senderOrg, aed, 500); err != nil {
 		t.Fatalf("SeedBalance: %v", err)
 	}
 	if got := l.balance(senderOrg, aed).Total; got != 500 {
@@ -581,26 +612,27 @@ func TestSeedBalance_CreditsOnlyTheCallersOwnAccount(t *testing.T) {
 // commit — the lock accounting should not be over-eager.
 func TestPrepare_TwoTransfersWithinBalance_BothSettle(t *testing.T) {
 	l := fundedLedger(t)
-	mustCreate(t, l)
+	readyToCommit(t, l)
 
 	second := transferID + "-B"
-	if err := l.sc.CreateTransfer(l.as(senderOrg), second,
-		senderLeg, aed, payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef); err != nil {
+	if err := l.create(senderOrg, second, senderLeg, aed,
+		payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef); err != nil {
 		t.Fatalf("CreateTransfer second: %v", err)
 	}
-
-	mustPrepare(t, l)
-	if err := l.sc.Prepare(l.as(senderOrg), second); err != nil {
+	if err := l.accept(payoutOrg, second); err != nil {
+		t.Fatalf("Accept second: %v", err)
+	}
+	if err := l.prepare(senderOrg, second); err != nil {
 		t.Fatalf("Prepare second: %v", err)
 	}
 	if got := l.balance(senderOrg, aed).Locked; got != 2*senderLeg {
 		t.Fatalf("locked = %d, want %d", got, 2*senderLeg)
 	}
 
-	if err := l.sc.Commit(l.as(payoutOrg), transferID); err != nil {
+	if err := l.commit(payoutOrg, transferID); err != nil {
 		t.Fatalf("Commit first: %v", err)
 	}
-	if err := l.sc.Commit(l.as(payoutOrg), second); err != nil {
+	if err := l.commit(payoutOrg, second); err != nil {
 		t.Fatalf("Commit second: %v", err)
 	}
 
@@ -619,14 +651,14 @@ func TestEmptyArguments_Rejected(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"empty transferID", l.sc.CreateTransfer(l.as(senderOrg), "",
-			senderLeg, aed, payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef), "transferID must not be empty"},
-		{"empty senderCcy", l.sc.CreateTransfer(l.as(senderOrg), "e1",
-			senderLeg, "", payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef), "senderCcy must not be empty"},
-		{"empty quoteID", l.sc.CreateTransfer(l.as(senderOrg), "e2",
-			senderLeg, aed, payoutLeg, inr, "", expiresAt, payoutOrg, payeeRef), "quoteID must not be empty"},
-		{"empty payeeRef", l.sc.CreateTransfer(l.as(senderOrg), "e3",
-			senderLeg, aed, payoutLeg, inr, quoteID, expiresAt, payoutOrg, ""), "payoutPayeeRef must not be empty"},
+		{"empty transferID", l.create(senderOrg, "", senderLeg, aed, payoutLeg, inr,
+			quoteID, expiresAt, payoutOrg, payeeRef), "transferID must not be empty"},
+		{"empty senderCcy", l.create(senderOrg, "e1", senderLeg, "", payoutLeg, inr,
+			quoteID, expiresAt, payoutOrg, payeeRef), "senderCcy must not be empty"},
+		{"empty quoteID", l.create(senderOrg, "e2", senderLeg, aed, payoutLeg, inr,
+			"", expiresAt, payoutOrg, payeeRef), "quoteID must not be empty"},
+		{"empty payeeRef", l.create(senderOrg, "e3", senderLeg, aed, payoutLeg, inr,
+			quoteID, expiresAt, payoutOrg, ""), "payoutPayeeRef must not be empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) { requireErrContains(t, tc.err, tc.want) })
 	}

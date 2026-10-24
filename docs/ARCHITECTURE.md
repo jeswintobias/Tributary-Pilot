@@ -103,7 +103,7 @@ chaincode.
 
 | Contract | Channel | Responsibility | Phase |
 |---|---|---|---|
-| `settlement` | `mychannel` | Two-phase commit over both legs of a transfer; per-org balances in integer minor units | **0 — implemented** |
+| `settlement` | `mychannel` | Capture → accept → prepare → commit over both legs; per-org balances in integer minor units | **0 — implemented** |
 | `token` | `mychannel` | MIST-aligned Issue / Manage / Settle / Transact; role-restricted mint and burn | 1 |
 | `pool` | `mychannel` | Member deposits and withdrawals; netting windows computing multilateral net positions | 1 |
 | `policy` | `mychannel` | Limits, approved members, maker-checker; every agent action passes through it | 1 |
@@ -134,6 +134,8 @@ sequenceDiagram
     X-->>G: quoteID, rate as integer num/den
     G->>SC: CreateTransfer(transferID, legs, quoteID, expiresAt)
     Note over SC: state CAPTURED
+    PB->>SC: Accept(transferID)
+    Note over SC: payout bank agrees to the terms<br/>state ACCEPTED — still nothing locked
     G->>SC: Prepare(transferID)
     Note over SC: both legs locked, proof hash anchored<br/>state PREPARED
     SC-->>PB: chaincode event
@@ -143,9 +145,14 @@ sequenceDiagram
     U-->>R: Payout confirmations
 ```
 
-Steps 1–3 and the adapter in step 11 are Phase 1 and simulated. Steps 4–10 — the
+Steps 1–3 and the payout adapter at the end are Phase 1 and simulated. The
 chaincode state machine, the locks, the atomic move and the endorsement
-requirement — are what Phase 0 implements and tests.
+requirement are what Phase 0 implements and tests.
+
+`Accept` is the half of NPCI's capture/accept phase that the first
+implementation collapsed away. Without it, `Prepare` — which locks *both*
+parties' funds — was reachable by the sending organisation alone. See
+[SETTLEMENT_FLOW.md](SETTLEMENT_FLOW.md) and threat T2.5.
 
 ## 7. Money representation
 

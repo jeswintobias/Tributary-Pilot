@@ -27,6 +27,8 @@ of trying to cheat the other, which is the entire reason for two-phase commit.
 | T1.4 | Replaying a transfer to double-pay a payee | `transferID` is the idempotency key; `CreateTransfer` rejects an ID already in state | `TestCreateTransfer_DuplicateID_Rejected` |
 | T1.5 | Double-spend by preparing two transfers against the same funds | Locks are taken at `Prepare` and available balance is `total - locked` | `TestPrepare_InsufficientAvailable_Fails` |
 | T1.6 | Funds stranded in `locked` forever after a counterparty disappears | `Abort` is callable by either party once `expiresAt` has passed, releasing both locks | `TestAbort_AfterExpiry_RefundsBothLegs` |
+| T1.8 | A transaction that writes a key twice loses one of the writes, creating or destroying value | Every balance operation in an invocation goes through one `balanceBook`, which caches this transaction's own writes. Fabric gives chaincode **no** read-your-writes: `SetState` appends to the write set while `GetState` reads the state DB | `TestCommit_SameCurrencyBothLegs_IsExact` — includes a conservation check |
+| T1.9 | A settling institution names itself as the beneficiary and pays itself into existence | `CreateTransfer` rejects a `payoutPayeeRef` equal to either party's MSP ID | `TestCreateTransfer_PayeeIsAParty_Rejected` |
 | T1.7 | Rounding or precision loss skimming value from each transfer | Every amount is an integer in minor units; rates are integer numerator / denominator; no float type appears in the contract | `TestAmounts_IntegerExact` |
 
 ## T2 — Authorisation
@@ -46,6 +48,8 @@ should have.
 | T2.1 | An unrelated organisation commits someone else's transfer | Caller's MSP ID is read from the signing identity and checked against the transfer's two parties on every privileged call | `TestCommit_UnauthorizedOrg_Fails`, and **verified on the live network** — `network/verify-platformorg.sh` |
 | T2.2 | One org unilaterally settles without the counterparty agreeing | Endorsement policy requires both parties — `AND('Org1MSP.peer','Org2MSP.peer')` with the Phase 0 org mapping; a single-org transaction fails validation at the Validation Service | **Verified on the live network** — `network/demo.sh` commits with one org's endorsement and the transfer stays `PREPARED` |
 | T2.3 | A client forges an MSP ID in the call arguments | MSP ID is never taken from arguments; it comes from `stub.GetCreator()` via the client identity library | `TestCommit_UnauthorizedOrg_Fails`, and live: `PlatformOrg` cannot name itself a party |
+| T2.5 | The sending org locks the payout bank's liquidity without its consent | `Prepare` requires state `ACCEPTED`, and only the payout org may `Accept`. Nothing of the counterparty's can be locked until it has agreed to the terms | `TestPrepare_WithoutAccept_Fails`, `TestAccept_OnlyPayoutOrg`, and live in `network/demo.sh` |
+| T2.6 | A transfer is created with a far-future expiry, holding locked funds hostage, since a prepared transfer can only be aborted after expiry | `expiresAt` may be at most `MaxSettlementWindowSeconds` (900s) past the transaction timestamp — the lifetime of a signed FX quote | `TestCreateTransfer_ExpiryBeyondWindow_Rejected` |
 | T2.4 | An operator raises their own limit and moves pool funds | Maker-checker: proposer must differ from approver for limit-exceeding actions | **Planned** — Phase 1 `policy` contract |
 
 ## T3 — The AI agent
@@ -77,9 +81,31 @@ should have.
 
 | # | Threat | Control | Test |
 |---|---|---|---|
+| T6.4 | A test mock is more permissive than Fabric, so a real defect passes CI | The mock stub reproduces Fabric's transaction semantics: writes are buffered and invisible to `GetState` within the same transaction, and discarded entirely when the call returns an error | `TestFailedCall_WritesNothing`; T1.8 and T1.9 were both found this way |
 | T6.1 | Endorsing peers disagree because chaincode is non-deterministic | No wall-clock time, no randomness, no map iteration in outputs, no external calls. Timestamps come from `stub.GetTxTimestamp()` | Review rule; divergence would surface as MVCC/validation failure on the live network |
 | T6.2 | A modified upstream dependency is shipped without anyone noticing | Upstream DRUNIX is never vendored or modified. `network/` only wraps its scripts, and the commit we tested against is recorded | `network/README.md` records the exact upstream commit |
 | T6.3 | Concurrent transfers on the same balance key silently overwrite each other | DRUNIX's Committing Peer runs MVCC validation; the losing transaction is marked invalid and must be resubmitted | **Planned** — concurrency test on the live network |
+
+## Found in review, and fixed
+
+Two defects were found when an external reviewer read the contract against
+Fabric's real semantics, and both are worth recording rather than quietly
+patching:
+
+1. **No read-your-writes (T1.8, T1.9).** `Commit` settles two legs. Where both
+   touch the same account and currency, the second leg read the balance as it
+   was *before* the transaction and overwrote the first leg's write. Paying an
+   account that had just been debited restored its old total — value created out
+   of nothing. The reverse order destroyed value. The test mock applied writes
+   immediately, so all 26 tests passed over it. The mock now matches Fabric and
+   the contract routes every balance operation through one `balanceBook`.
+
+2. **Unilateral locking (T2.5, T2.6).** `CreateTransfer` and `Prepare` were both
+   callable by the sending org alone, and `expiresAt` had no upper bound. A
+   one-fils transfer could lock the payout bank's entire balance for years, and
+   the bank could not abort until expiry. `Accept` and the bounded settlement
+   window close it — and restore the capture/**accept** phase the brief
+   describes, which the first implementation had collapsed into one step.
 
 ## Known gaps in Phase 0
 
