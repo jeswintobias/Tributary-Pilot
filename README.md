@@ -51,14 +51,17 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 39 unit tests, `cd chaincode/settlement && go test ./...` |
-| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 39 tests passing, 77.5% statement coverage |
+| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 42 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 42 tests passing, 77.6% statement coverage |
 | P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
 | P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
 | P0.4b | Live happy-path and abort-path demo | **Done** | `./network/demo.sh` — settles on-chain; single-org commit refused |
 | P0.5 | Synthetic corridor data generator | **Done** | `python agent/data/generate.py` — 96,384 rows, deterministic |
 | P0.5 | Quantile forecasting notebook + pool sizing | **Done** | `agent/notebooks/forecast.ipynb` — executed, 12/12 cells, 4 figures, no errors |
-| P0.6 | Submission summary + truth pass on this table | **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
+| P1 | Gateway service over the live ledger (Fabric Gateway SDK) | **Done** | `cd services/gateway && npm run check` |
+| P1 | Corridor view — act as any org, watch the contract refuse | **Done** | `npm start` → http://localhost:7700 |
+| P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 42 tests, `go test ./...` |
+| P0.6 | Submission summary + truth pass on this table |  **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
 | P0.2 | `PlatformOrg` as a third organisation on the channel | **Done** | `./network/add-platform-org.sh` — `Org3MSP` is a channel member; **runs no peer**, see note below |
 | — | `PlatformOrg` endorsing peers | **Planned** | Phase 1 — a regulator observer does not endorse |
 | — | Token, pool, policy, attestation, payout contracts | **Planned** | Phase 1 — see [ROADMAP.md](docs/ROADMAP.md) |
@@ -201,6 +204,21 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 First run clones upstream and builds eight Go binaries, so give it time. On
 Apple silicon everything after that is emulated and slow. `demo.sh` expects a
 fresh network — balances accumulate across runs.
+
+### Corridor view — the UI over the live ledger
+
+```bash
+cd services/gateway
+npm install
+npm run check     # proves the Gateway SDK can reach DRUNIX
+npm start         # http://localhost:7700
+```
+
+Act as SenderOrg, PayoutBankOrg or **PlatformOrg**, and drive a transfer through
+capture → accept → prepare → commit. Nothing is mocked: every figure is read
+from the ledger and every refusal is the chaincode's own message. Switching to
+PlatformOrg and pressing an action shows threat T2.1 happening, rather than
+describing it. See [`services/gateway/README.md`](services/gateway/README.md).
 
 ### Forecasting notebook
 

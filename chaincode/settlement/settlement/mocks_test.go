@@ -1,12 +1,15 @@
 package settlement
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/hyperledger/fabric-chaincode-go/v2/pkg/cid"
 	"github.com/hyperledger/fabric-chaincode-go/v2/shim"
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
+	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/queryresult"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -94,6 +97,42 @@ func (m *mockStub) SetEvent(name string, payload []byte) error {
 }
 
 func (m *mockStub) GetTxID() string { return "mock-tx" }
+
+// GetStateByPartialCompositeKey ranges over COMMITTED state in key order, as
+// Fabric does — this transaction's own writes are not visible to it either.
+func (m *mockStub) GetStateByPartialCompositeKey(objectType string, keys []string) (shim.StateQueryIteratorInterface, error) {
+	prefix := "\x00" + objectType + "\x00" + strings.Join(keys, "\x00")
+	matched := make([]string, 0, len(m.committed))
+	for k := range m.committed {
+		if strings.HasPrefix(k, prefix) {
+			matched = append(matched, k)
+		}
+	}
+	// Fabric returns a range in key order; sorting keeps the mock faithful and
+	// the iteration deterministic.
+	sort.Strings(matched)
+	return &mockIterator{stub: m, keys: matched}, nil
+}
+
+type mockIterator struct {
+	shim.StateQueryIteratorInterface
+	stub *mockStub
+	keys []string
+	i    int
+}
+
+func (it *mockIterator) HasNext() bool { return it.i < len(it.keys) }
+
+func (it *mockIterator) Next() (*queryresult.KV, error) {
+	if !it.HasNext() {
+		return nil, fmt.Errorf("iterator exhausted")
+	}
+	k := it.keys[it.i]
+	it.i++
+	return &queryresult.KV{Key: k, Value: it.stub.committed[k]}, nil
+}
+
+func (it *mockIterator) Close() error { return nil }
 
 // commitTx applies the write set, as a peer does for a valid transaction.
 func (m *mockStub) commitTx() {

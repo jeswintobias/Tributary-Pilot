@@ -1,0 +1,20 @@
+{
+  "name": "tributary-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fabric Gateway service and corridor UI over the live DRUNIX settlement chaincode",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node src/check.js",
+    "probe:events": "node src/probe-events.mjs"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "1.12.6",
+    "@hyperledger/fabric-gateway": "1.7.1"
+  }
+}

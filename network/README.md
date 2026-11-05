@@ -92,9 +92,19 @@ three replicas of the same thing:
 | `cp.orgN` | **Committing Peer** — validates, MVCC, commits | `1` | 7061 / 9061 |
 | `vs1.orgN` | **Validation Service** — endorsement-policy and signature checks | `2` | 7071 / 9071 |
 
-This catches people out: upstream's `setGlobals <org>` defaults to index 1, the
-Committing Peer, which has no chaincode installed, so every query against it
-fails. Our scripts always ask for index 0.
+This catches people out twice, in opposite directions:
+
+- Upstream's `setGlobals <org>` defaults to index 1, the Committing Peer, which
+  has **no chaincode installed**, so every query against it fails. Our scripts
+  always ask for index 0.
+- But the Lite Peer has **no ledger**, so it cannot deliver blocks. A chaincode
+  event subscription against it is accepted and then delivers nothing at all.
+  Events must be read from the Committing Peer.
+
+So a client needs both: endorse and query on peer 0, subscribe to events on
+peer 1. Stock Fabric has no equivalent split, and nothing in DRUNIX's own docs
+mentions it. `services/gateway/src/probe-events.mjs` shows it directly —
+run `npm run probe:events` in `services/gateway`.
 
 ## Usage
 
@@ -168,6 +178,7 @@ container has no network access, so dependencies have to travel with the source.
 | `no matching manifest for linux/arm64` | `DOCKER_DEFAULT_PLATFORM` not set | `common.sh` sets it on Apple silicon; export it manually elsewhere |
 | Bring-up times out | Emulated containers are slow | Raise `-d` (CLI delay) and `-r` (retries); give Docker more memory |
 | `chaincode definition for 'X' exists, but chaincode is not installed` on a query that should work | The CLI is pointed at the Committing Peer. DRUNIX splits the peer in two and upstream's `setGlobals <org>` defaults to peer index **1**, the Committing Peer, which has no chaincode installed | Call `setGlobals <org> 0` — index 0 is the Lite Peer, which endorses. `demo.sh` does this via `LITE_PEER=0` |
+| A chaincode-event subscription connects but never delivers anything, even from block 0 | The Lite Peer is **stateless — it has no ledger**, so it cannot serve blocks. It accepts the subscription and silently delivers nothing | Subscribe on the **Committing Peer** (7061 / 9061, host alias `peer1.orgN.example.com`). Endorse on the Lite Peer, read events from the Committing Peer. `services/gateway` does exactly this; `npm run probe:events` demonstrates the difference |
 | `timed out waiting for txid on all peers` | `peer chaincode invoke --waitForEvent` exceeding its 30s default under emulation | Drop `--waitForEvent` and verify by reading committed state back, as `demo.sh` does |
 | `OVERRIDE_ORG: unbound variable` | Upstream's `envVar.sh` is not written for `set -u` | `set +u` before sourcing it |
 | Local binaries and docker images "out of sync" | Built binaries differ from image 1.0.0 | Rebuild from the pinned commit: `rm -rf ~/.tributary-pilot/drunix && ./network/up.sh` |

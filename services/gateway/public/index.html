@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tributary Corridor View</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --paper:#f6f8f8; --surface:#fff; --ink:#131a1d; --ink-soft:#58666d; --rule:#dce3e5;
+  --accent:#0d6b6e; --accent-soft:#e2efef; --verified:#1a6b3c; --verified-soft:#e5f1ea;
+  --refused:#a32a24; --refused-soft:#fae9e8; --code:#f0f4f4; --pending:#8a6d1f; --pending-soft:#faf2dd;
+  --font:'IBM Plex Sans',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0d1215; --surface:#151d21; --ink:#e5ecee; --ink-soft:#92a1a8; --rule:#253139;
+  --accent:#4fb3b3; --accent-soft:#102e2e; --verified:#5cc08a; --verified-soft:#0e2a1c;
+  --refused:#e8837c; --refused-soft:#2d1413; --code:#10181c; --pending:#d8b64a; --pending-soft:#2a2411;
+  color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --paper:#0d1215; --surface:#151d21; --ink:#e5ecee; --ink-soft:#92a1a8; --rule:#253139;
+  --accent:#4fb3b3; --accent-soft:#102e2e; --verified:#5cc08a; --verified-soft:#0e2a1c;
+  --refused:#e8837c; --refused-soft:#2d1413; --code:#10181c; --pending:#d8b64a; --pending-soft:#2a2411;
+  color-scheme:dark;}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font);font-size:15px;line-height:1.55}
+.wrap{max-width:84rem;margin-inline:auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{margin:0;font-weight:600}
+h1{font-size:1.5rem;letter-spacing:-.01em}
+h2{font-size:1rem}
+h3{font-size:.95rem}
+p{margin:0}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft)}
+
+header{background:var(--surface);border-bottom:1px solid var(--rule);position:sticky;top:0;z-index:5}
+header .wrap{padding-block:.9rem;display:flex;flex-wrap:wrap;gap:1rem;align-items:center;justify-content:space-between}
+.brand{display:flex;flex-direction:column;gap:.15rem;min-width:0}
+.live{display:inline-flex;align-items:center;gap:.4rem;font-family:var(--mono);font-size:.7rem;color:var(--verified)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--verified)}
+.dot.off{background:var(--refused)}
+
+.ident{display:flex;gap:.4rem;flex-wrap:wrap}
+.ident button{font:inherit;font-size:.82rem;padding:.42rem .7rem;border:1px solid var(--rule);border-radius:3px;background:var(--surface);color:var(--ink-soft);cursor:pointer}
+.ident button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.ident button .ro{font-family:var(--mono);font-size:.62rem;opacity:.85;margin-left:.3rem}
+
+main .wrap{padding-block:1.3rem;display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:1.1rem}
+@media (max-width:900px){main .wrap{grid-template-columns:1fr}}
+.col{display:flex;flex-direction:column;gap:1.1rem;min-width:0}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:4px;min-width:0}
+.card>.hd{padding:.75rem 1rem;border-bottom:1px solid var(--rule);display:flex;align-items:center;justify-content:space-between;gap:.6rem}
+.card>.bd{padding:1rem;display:flex;flex-direction:column;gap:.8rem;min-width:0}
+
+/* Sticky: a refusal that scrolls out of view is a refusal nobody reads, and the
+   refusal is the whole point of switching identity. */
+.banner{padding:.7rem 1rem;border-radius:3px;font-size:.88rem;display:none;
+  position:sticky;top:4.4rem;z-index:4;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.banner.show{display:block}
+.banner.err{background:var(--refused-soft);color:var(--refused);border:1px solid var(--refused)}
+.banner.ok{background:var(--verified-soft);color:var(--verified);border:1px solid var(--verified)}
+.banner .mono{display:block;margin-top:.3rem;font-size:.8rem;word-break:break-word}
+
+.tf{border:1px solid var(--rule);border-radius:3px;padding:.8rem .9rem;display:flex;flex-direction:column;gap:.6rem;min-width:0}
+.tf .top{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between}
+.tf .id{font-family:var(--mono);font-size:.82rem;overflow-wrap:anywhere}
+.pill{font-family:var(--mono);font-size:.68rem;font-weight:600;letter-spacing:.07em;padding:.17rem .45rem;border-radius:2px;white-space:nowrap}
+.s-CAPTURED{background:var(--accent-soft);color:var(--accent)}
+.s-ACCEPTED{background:var(--pending-soft);color:var(--pending)}
+.s-PREPARED{background:var(--accent-soft);color:var(--accent)}
+.s-SETTLED{background:var(--verified-soft);color:var(--verified)}
+.s-ABORTED{background:var(--code);color:var(--ink-soft)}
+
+.legs{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+@media (max-width:520px){.legs{grid-template-columns:1fr}}
+.leg{background:var(--code);border-radius:3px;padding:.5rem .6rem;min-width:0}
+/* Block-level, or the label and a 64-character hash run together on one
+   unbreakable line and push the page sideways on a phone. */
+.leg .k,.leg .v,.leg .u{display:block;overflow-wrap:anywhere}
+.leg .k{font-family:var(--mono);font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
+.leg .v{font-family:var(--mono);font-size:.92rem;font-weight:500}
+.leg .v .u{display:inline}
+.leg .u{font-size:.7rem;color:var(--ink-soft)}
+.acts{display:flex;gap:.4rem;flex-wrap:wrap}
+.acts button{font:inherit;font-size:.8rem;padding:.35rem .65rem;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer}
+.acts button.danger{border-color:var(--refused);color:var(--refused)}
+.acts button:disabled{opacity:.45;cursor:progress}
+
+table{border-collapse:collapse;width:100%;font-size:.85rem}
+th,td{padding:.4rem .5rem;text-align:left;border-bottom:1px solid var(--rule);white-space:nowrap}
+th{font-family:var(--mono);font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:500}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+td.lock{color:var(--pending)}
+tbody tr:last-child td{border-bottom:0}
+
+form{display:flex;flex-direction:column;gap:.55rem}
+label{display:flex;flex-direction:column;gap:.2rem;font-size:.78rem;color:var(--ink-soft)}
+input,select{font:inherit;font-size:.85rem;padding:.4rem .5rem;border:1px solid var(--rule);border-radius:3px;background:var(--paper);color:var(--ink);min-width:0}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+.primary{font:inherit;font-size:.85rem;font-weight:500;padding:.5rem .8rem;border:0;border-radius:3px;background:var(--accent);color:#fff;cursor:pointer}
+.primary:disabled{opacity:.5;cursor:progress}
+.ghost{font:inherit;font-size:.78rem;padding:.35rem .6rem;border:1px solid var(--rule);border-radius:3px;background:transparent;color:var(--ink-soft);cursor:pointer}
+
+.ev{display:flex;flex-direction:column;gap:.35rem;max-height:19rem;overflow-y:auto}
+.ev .e{display:flex;gap:.5rem;align-items:baseline;font-family:var(--mono);font-size:.74rem;padding:.3rem .45rem;background:var(--code);border-radius:2px}
+.ev .e b{color:var(--accent);font-weight:600}
+.empty{color:var(--ink-soft);font-size:.85rem}
+footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-top:1px solid var(--rule);margin-top:1rem}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <h1>Tributary corridor</h1>
+      <span class="live"><span class="dot off" id="dot"></span><span id="livetext">connecting…</span></span>
+    </div>
+    <div class="ident" id="ident" role="group" aria-label="Act as organisation"></div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <div class="col">
+      <div class="banner" id="banner" role="status"></div>
+
+      <section class="card">
+        <div class="hd"><h2>Transfers</h2><span class="eyebrow" id="tfcount">—</span></div>
+        <div class="bd" id="transfers"><p class="empty">Reading the ledger…</p></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <div class="hd"><h2>New transfer</h2><button class="ghost" id="fill" type="button">Ravi example</button></div>
+        <div class="bd">
+          <form id="create">
+            <label>Transfer ID<input name="transferID" required></label>
+            <div class="row2">
+              <label>Sender leg (minor)<input name="senderLegAmount" class="mono" inputmode="numeric" required></label>
+              <label>Ccy<input name="senderCcy" required></label>
+            </div>
+            <div class="row2">
+              <label>Payout leg (minor)<input name="payoutLegAmount" class="mono" inputmode="numeric" required></label>
+              <label>Ccy<input name="payoutCcy" required></label>
+            </div>
+            <label>Payout org<select name="payoutOrg" id="payoutOrg"></select></label>
+            <label>Beneficiary reference (salted hash, never PII)<input name="payoutPayeeRef" required></label>
+            <div class="row2">
+              <label>Quote ID<input name="quoteID" required></label>
+              <label>Expires in (s, max 900)<input name="expiresIn" class="mono" inputmode="numeric" value="900" required></label>
+            </div>
+            <button class="primary" type="submit">Capture transfer</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="hd"><h2>Balances</h2><span class="eyebrow">integer minor units</span></div>
+        <div class="bd" id="balances"><p class="empty">—</p></div>
+      </section>
+
+      <section class="card">
+        <div class="hd"><h2>Seed balance</h2><span class="eyebrow">phase 0 scaffolding</span></div>
+        <div class="bd">
+          <form id="seed">
+            <div class="row2">
+              <label>Currency<input name="ccy" value="AED" required></label>
+              <label>Amount (minor)<input name="amount" class="mono" inputmode="numeric" value="100000000" required></label>
+            </div>
+            <button class="primary" type="submit">Credit own account</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="hd"><h2>Chaincode events</h2><span class="eyebrow">live</span></div>
+        <div class="bd"><div class="ev" id="events"><p class="empty">Waiting for the next block…</p></div></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer><div class="wrap">
+  Every figure on this page is read from the ledger through the Fabric Gateway. Nothing is mocked.
+  Switch to <b>PlatformOrg</b> and try an action — it is a full channel member, so the call reaches
+  the chaincode and the contract itself refuses it.
+</div></footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { as: 'Org1MSP', orgs: [], busy: false };
+
+const minor = (v) => (Number(v) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+function banner(kind, text, detail) {
+  const el = $('#banner');
+  el.className = `banner show ${kind}`;
+  el.innerHTML = esc(text) + (detail ? `<span class="mono">${esc(detail)}</span>` : '');
+  if (kind === 'ok') setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+  return body;
+}
+
+function renderIdents() {
+  $('#ident').innerHTML = state.orgs.map((o) => `
+    <button type="button" data-msp="${o.mspId}" aria-pressed="${o.mspId === state.as}"
+            title="${esc(o.role)}">${esc(o.label)}${o.readOnly ? '<span class="ro">READ-ONLY</span>' : ''}</button>
+  `).join('');
+  $('#ident').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+    state.as = b.dataset.msp;
+    renderIdents();
+    refresh();
+    const org = state.orgs.find((o) => o.mspId === state.as);
+    if (org?.readOnly) banner('ok', `Acting as ${org.label}. It can read everything and change nothing — try an action.`);
+  }));
+  $('#payoutOrg').innerHTML = state.orgs
+    .filter((o) => !o.readOnly && o.mspId !== state.as)
+    .map((o) => `<option value="${o.mspId}">${esc(o.label)} (${o.mspId})</option>`).join('');
+}
+
+// Which calls the state machine allows next. Identity is NOT filtered here on
+// purpose: acting as the wrong org and watching the contract refuse is the
+// clearest demonstration of the access control.
+const NEXT = { CAPTURED: ['Accept', 'Abort'], ACCEPTED: ['Prepare', 'Abort'], PREPARED: ['Commit', 'Abort'] };
+
+function renderTransfers(transfers) {
+  $('#tfcount').textContent = `${transfers.length} on the ledger`;
+  if (!transfers.length) {
+    $('#transfers').innerHTML = '<p class="empty">No transfers yet. Capture one on the right.</p>';
+    return;
+  }
+  $('#transfers').innerHTML = [...transfers].reverse().map((t) => `
+    <article class="tf">
+      <div class="top">
+        <span class="id">${esc(t.transferID)}</span>
+        <span class="pill s-${esc(t.state)}">${esc(t.state)}</span>
+      </div>
+      <div class="legs">
+        <div class="leg">
+          <span class="k">Sender leg · ${esc(t.senderOrg)}</span>
+          <span class="v">${esc(t.senderLegAmount)} <span class="u">${esc(t.senderCcy)} minor</span></span>
+          <span class="u">= ${minor(t.senderLegAmount)} ${esc(t.senderCcy)}</span>
+        </div>
+        <div class="leg">
+          <span class="k">Payout leg · ${esc(t.payoutOrg)}</span>
+          <span class="v">${esc(t.payoutLegAmount)} <span class="u">${esc(t.payoutCcy)} minor</span></span>
+          <span class="u">= ${minor(t.payoutLegAmount)} ${esc(t.payoutCcy)}</span>
+        </div>
+      </div>
+      ${t.proofHash ? `<div class="leg"><span class="k">Proof hash anchored at prepare</span><span class="u mono">${esc(t.proofHash.slice(0, 48))}…</span></div>` : ''}
+      <div class="acts">
+        ${(NEXT[t.state] ?? []).map((a) => `<button type="button" data-id="${esc(t.transferID)}" data-act="${a}" class="${a === 'Abort' ? 'danger' : ''}">${a}</button>`).join('')
+          || '<span class="empty">Terminal — nothing further is permitted.</span>'}
+      </div>
+    </article>
+  `).join('');
+
+  $('#transfers').querySelectorAll('.acts button').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      const out = await api(`/api/transfers/${encodeURIComponent(b.dataset.id)}/${b.dataset.act}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ as: state.as }),
+      });
+      banner('ok', `${b.dataset.act} committed`, `tx ${out.transactionId}`);
+    } catch (err) {
+      banner('err', `${b.dataset.act} refused by the chaincode`, err.message);
+    } finally {
+      b.disabled = false;
+      refresh();
+    }
+  }));
+}
+
+function renderBalances(balances) {
+  if (!balances.length) { $('#balances').innerHTML = '<p class="empty">Nothing on the ledger yet.</p>'; return; }
+  $('#balances').innerHTML = `<table><thead><tr><th>Account</th><th>Ccy</th><th style="text-align:right">Total</th><th style="text-align:right">Locked</th></tr></thead><tbody>
+    ${balances.map((b) => `<tr>
+      <td class="mono" style="font-size:.78rem">${esc(b.account.length > 22 ? b.account.slice(0, 20) + '…' : b.account)}</td>
+      <td class="mono">${esc(b.ccy)}</td>
+      <td class="n">${esc(b.total)}</td>
+      <td class="n ${Number(b.locked) ? 'lock' : ''}">${esc(b.locked)}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+async function refresh() {
+  try {
+    const s = await api(`/api/state?as=${encodeURIComponent(state.as)}`);
+    renderTransfers(s.transfers);
+    renderBalances(s.balances);
+    $('#dot').classList.remove('off');
+    $('#livetext').textContent = 'live ledger';
+  } catch (err) {
+    $('#dot').classList.add('off');
+    $('#livetext').textContent = 'ledger unreachable';
+    banner('err', 'Could not read the ledger', err.message);
+  }
+}
+
+$('#fill').addEventListener('click', () => {
+  const f = $('#create');
+  const stamp = Math.floor(Date.now() / 1000);
+  f.transferID.value = `TP-UAE-IN-${stamp}`;
+  f.senderLegAmount.value = '220000';
+  f.senderCcy.value = 'AED';
+  f.payoutLegAmount.value = '3000000';
+  f.payoutCcy.value = 'INR';
+  f.payoutPayeeRef.value = 'sha256:collegefeespayeeref0000000000000000';
+  f.quoteID.value = `quote-${stamp}`;
+  f.expiresIn.value = '900';
+});
+
+$('#create').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const f = new FormData(e.target);
+  const body = Object.fromEntries(f.entries());
+  body.as = state.as;
+  body.expiresAt = Math.floor(Date.now() / 1000) + Number(body.expiresIn || 900);
+  delete body.expiresIn;
+  try {
+    const out = await api('/api/transfers', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    banner('ok', 'Transfer captured', `tx ${out.transactionId}`);
+    e.target.reset();
+  } catch (err) {
+    banner('err', 'Capture refused by the chaincode', err.message);
+  } finally { btn.disabled = false; refresh(); }
+});
+
+$('#seed').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const body = Object.fromEntries(new FormData(e.target).entries());
+  body.as = state.as;
+  try {
+    await api('/api/seed', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    banner('ok', 'Balance credited');
+  } catch (err) {
+    banner('err', 'Seed refused by the chaincode', err.message);
+  } finally { btn.disabled = false; refresh(); }
+});
+
+function streamEvents() {
+  const src = new EventSource('/api/events');
+  const list = $('#events');
+  src.addEventListener('message', (m) => {
+    const e = JSON.parse(m.data);
+    if (list.querySelector('.empty')) list.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'e';
+    row.innerHTML = `<b>${esc(e.name)}</b><span>${esc(e.payload.transferID ?? '')}</span><span style="margin-left:auto;opacity:.7">blk ${esc(e.blockNumber)}</span>`;
+    list.prepend(row);
+    while (list.children.length > 40) list.lastChild.remove();
+    refresh();
+  });
+  src.addEventListener('error', () => { /* EventSource retries on its own */ });
+}
+
+(async function start() {
+  try {
+    const meta = await api('/api/orgs');
+    state.orgs = meta.orgs;
+    renderIdents();
+    await refresh();
+    streamEvents();
+    setInterval(refresh, 8000);
+  } catch (err) {
+    banner('err', 'Gateway could not reach the network', err.message);
+  }
+})();
+</script>
+</body>
+</html>

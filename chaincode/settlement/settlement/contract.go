@@ -378,6 +378,59 @@ func (s *SmartContract) GetBalance(ctx contractapi.TransactionContextInterface, 
 	return &b, nil
 }
 
+// ListTransfers returns every transfer on the ledger, in key order.
+//
+// Query-only. A range query inside a transaction that also writes would be
+// exposed to phantom reads — another transaction could insert a key into the
+// range between endorsement and validation — so nothing that changes state may
+// call this. It exists for the gateway and the operator views, which read.
+func (s *SmartContract) ListTransfers(ctx contractapi.TransactionContextInterface) ([]*Transfer, error) {
+	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(transferKeyPrefix, []string{})
+	if err != nil {
+		return nil, fmt.Errorf("range over transfers: %w", err)
+	}
+	defer iter.Close()
+
+	out := []*Transfer{}
+	for iter.HasNext() {
+		kv, err := iter.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read next transfer: %w", err)
+		}
+		var t Transfer
+		if err := json.Unmarshal(kv.GetValue(), &t); err != nil {
+			return nil, fmt.Errorf("decode transfer at %q: %w", kv.GetKey(), err)
+		}
+		out = append(out, &t)
+	}
+	return out, nil
+}
+
+// ListBalances returns every balance on the ledger, in key order.
+//
+// Query-only, for the same reason as ListTransfers.
+func (s *SmartContract) ListBalances(ctx contractapi.TransactionContextInterface) ([]*Balance, error) {
+	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(balanceKeyPrefix, []string{})
+	if err != nil {
+		return nil, fmt.Errorf("range over balances: %w", err)
+	}
+	defer iter.Close()
+
+	out := []*Balance{}
+	for iter.HasNext() {
+		kv, err := iter.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read next balance: %w", err)
+		}
+		var b Balance
+		if err := json.Unmarshal(kv.GetValue(), &b); err != nil {
+			return nil, fmt.Errorf("decode balance at %q: %w", kv.GetKey(), err)
+		}
+		out = append(out, &b)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Phase 0 scaffolding
 // ---------------------------------------------------------------------------

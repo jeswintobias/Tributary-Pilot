@@ -155,3 +155,97 @@ func TestFailedCall_WritesNothing(t *testing.T) {
 		t.Fatalf("state = %s after a failed call, want %s", got, StatePrepared)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Query functions used by the gateway and the operator views
+// ---------------------------------------------------------------------------
+
+func TestListTransfers_ReturnsEveryTransferInKeyOrder(t *testing.T) {
+	l := fundedLedger(t)
+
+	if got, err := l.sc.ListTransfers(l.as(senderOrg)); err != nil || len(got) != 0 {
+		t.Fatalf("empty ledger: got %d transfers, err %v — want 0 and no error", len(got), err)
+	}
+
+	for _, id := range []string{"TP-C", "TP-A", "TP-B"} {
+		if err := l.create(senderOrg, id, senderLeg, aed,
+			payoutLeg, inr, quoteID, expiresAt, payoutOrg, payeeRef); err != nil {
+			t.Fatalf("CreateTransfer %s: %v", id, err)
+		}
+	}
+
+	got, err := l.sc.ListTransfers(l.as(senderOrg))
+	if err != nil {
+		t.Fatalf("ListTransfers: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d transfers, want 3", len(got))
+	}
+	// Key order, not insertion order — the same order a peer would return.
+	for i, want := range []string{"TP-A", "TP-B", "TP-C"} {
+		if got[i].TransferID != want {
+			t.Fatalf("position %d is %s, want %s", i, got[i].TransferID, want)
+		}
+		if got[i].State != StateCaptured {
+			t.Fatalf("%s state = %s, want %s", got[i].TransferID, got[i].State, StateCaptured)
+		}
+	}
+
+	// It reflects state changes, not just creations.
+	if err := l.accept(payoutOrg, "TP-A"); err != nil {
+		t.Fatalf("Accept TP-A: %v", err)
+	}
+	got, _ = l.sc.ListTransfers(l.as(senderOrg))
+	if got[0].State != StateAccepted {
+		t.Fatalf("TP-A state = %s after Accept, want %s", got[0].State, StateAccepted)
+	}
+}
+
+func TestListBalances_ReturnsSeededAccounts(t *testing.T) {
+	l := fundedLedger(t)
+
+	got, err := l.sc.ListBalances(l.as(senderOrg))
+	if err != nil {
+		t.Fatalf("ListBalances: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d balances, want 2", len(got))
+	}
+
+	byKey := map[string]uint64{}
+	for _, b := range got {
+		byKey[b.Account+"/"+b.Ccy] = b.Total
+	}
+	if byKey[senderOrg+"/"+aed] != 1_000_000 {
+		t.Fatalf("sender AED = %d, want 1000000", byKey[senderOrg+"/"+aed])
+	}
+	if byKey[payoutOrg+"/"+inr] != 10_000_000 {
+		t.Fatalf("payout INR = %d, want 10000000", byKey[payoutOrg+"/"+inr])
+	}
+
+	// A settled transfer adds the beneficiary's balance to the listing.
+	readyToCommit(t, l)
+	if err := l.commit(payoutOrg, transferID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, _ = l.sc.ListBalances(l.as(senderOrg))
+	if len(got) != 4 {
+		t.Fatalf("got %d balances after settlement, want 4 (sender AED, payout AED+INR, payee INR)", len(got))
+	}
+}
+
+// The listing must not leak a transfer the caller is not party to being hidden
+// — it is a full-ledger view by design, which is what a regulator observer
+// needs. This records that intent so a future change does not silently alter it.
+func TestListTransfers_IsAFullLedgerView(t *testing.T) {
+	l := fundedLedger(t)
+	mustCreate(t, l)
+
+	got, err := l.sc.ListTransfers(l.as(otherOrg))
+	if err != nil {
+		t.Fatalf("ListTransfers as a non-party: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("non-party sees %d transfers, want 1 — this is a read-only ledger view", len(got))
+	}
+}
