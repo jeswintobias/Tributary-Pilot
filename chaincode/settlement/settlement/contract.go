@@ -47,17 +47,23 @@ func (s *SmartContract) CreateTransfer(
 	payoutOrg string,
 	payoutPayeeRef string,
 ) error {
-	for _, f := range []struct{ name, value string }{
-		{"transferID", transferID},
-		{"senderCcy", senderCcy},
-		{"payoutCcy", payoutCcy},
-		{"quoteID", quoteID},
-		{"payoutOrg", payoutOrg},
-		{"payoutPayeeRef", payoutPayeeRef},
-	} {
-		if err := requireNonEmpty(f.name, f.value); err != nil {
-			return err
-		}
+	if err := requireID("transferID", transferID, maxIDLen); err != nil {
+		return err
+	}
+	if err := requireID("quoteID", quoteID, maxIDLen); err != nil {
+		return err
+	}
+	if err := requireID("payoutOrg", payoutOrg, maxIDLen); err != nil {
+		return err
+	}
+	if err := requireID("payoutPayeeRef", payoutPayeeRef, maxPayeeRef); err != nil {
+		return err
+	}
+	if err := requireCcy("senderCcy", senderCcy); err != nil {
+		return err
+	}
+	if err := requireCcy("payoutCcy", payoutCcy); err != nil {
+		return err
 	}
 	// Zero legs are meaningless and would let a caller settle nothing while
 	// occupying a transfer ID. Negative amounts cannot be expressed: the
@@ -443,7 +449,7 @@ func (s *SmartContract) ListBalances(ctx contractapi.TransactionContextInterface
 // credit its own MSP ID, which keeps it from being a way to fabricate someone
 // else's balance, and it is removed when the token contract lands.
 func (s *SmartContract) SeedBalance(ctx contractapi.TransactionContextInterface, ccy string, amount uint64) error {
-	if err := requireNonEmpty("ccy", ccy); err != nil {
+	if err := requireCcy("ccy", ccy); err != nil {
 		return err
 	}
 	if amount == 0 {
@@ -671,6 +677,51 @@ func proofHash(t Transfer) string {
 		h.Write([]byte(field))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ---------------------------------------------------------------------------
+// Input bounds
+// ---------------------------------------------------------------------------
+
+// Unbounded strings are written to every peer's disk and kept forever, so each
+// one a caller controls is capped and charset-checked. The gateway validates
+// too, but the gateway is not the only client — the CLI talks to the peer
+// directly — so the contract is where this has to hold.
+const (
+	maxIDLen    = 64  // transferID, quoteID, payoutOrg
+	maxPayeeRef = 128 // room for "sha256:" plus a hex digest
+)
+
+// requireID accepts the characters an identifier needs and nothing else. No
+// spaces, no control characters, no composite-key separators.
+func requireID(name, value string, maxLen int) error {
+	if err := requireNonEmpty(name, value); err != nil {
+		return err
+	}
+	if len(value) > maxLen {
+		return fmt.Errorf("%s is %d bytes, the maximum is %d", name, len(value), maxLen)
+	}
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == ':'
+		if !ok {
+			return fmt.Errorf("%s contains %q; allowed are letters, digits and - _ . :", name, r)
+		}
+	}
+	return nil
+}
+
+// requireCcy accepts an ISO-4217-shaped code: exactly three capital letters.
+func requireCcy(name, value string) error {
+	if len(value) != 3 {
+		return fmt.Errorf("%s %q must be three letters, like AED or INR", name, value)
+	}
+	for _, r := range value {
+		if r < 'A' || r > 'Z' {
+			return fmt.Errorf("%s %q must be three capital letters", name, value)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

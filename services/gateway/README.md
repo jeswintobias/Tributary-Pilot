@@ -23,9 +23,32 @@ Then:
 ```bash
 cd services/gateway
 npm install
-npm run check     # proves the SDK can reach DRUNIX before anything else
-npm start         # http://localhost:7700
+npm run check               # proves the SDK can reach DRUNIX before anything else
+GATEWAY_DEV=1 npm start     # http://127.0.0.1:7700
 ```
+
+`GATEWAY_DEV=1` is the demo posture: `SeedBalance` works and the page collects
+its own tokens, so the organisation switcher is one click. Without it the
+service starts in production posture — `SeedBalance` returns 403 and you sign
+in with a token.
+
+### Access control
+
+- It binds to **loopback only**. `GATEWAY_HOST` overrides that, and the startup
+  banner warns you when it does. There is no TLS here, so anything other than
+  loopback needs a proxy in front.
+- Every endpoint but the public org roster needs `Authorization: Bearer <token>`.
+- **A token maps to exactly one organisation.** The caller cannot name an
+  identity; the token decides. Before this, the request body carried
+  `as: "Org2MSP"` and the service believed it.
+- Tokens are generated with `crypto.randomBytes` on first boot and written to
+  `.tokens.json` with mode 0600. There is no default credential. Override with
+  `GATEWAY_TOKENS` or `GATEWAY_TOKEN_FILE`.
+- 60 requests per 10 seconds per token; `GATEWAY_RATE_LIMIT` changes it.
+
+In production each organisation runs its own gateway holding only its own key.
+One process holding all three is a single-operator convenience for this demo,
+and it is recorded as still-open item 2 in `docs/THREAT_MODEL.md` T7.
 
 `npm run check` is worth running first. It connects as all three organisations
 and reads the ledger; if it fails, the UI will fail the same way and the message
@@ -58,7 +81,10 @@ will be clearer here.
 |---|---|
 | `src/fabric.js` | Three Gateway connections, one per organisation. PlatformOrg has no peer of its own, so it connects through SenderOrg's Lite Peer with its own signing material |
 | `src/server.js` | HTTP API and static host. A chaincode rejection returns **422** with the contract's message, because the ledger understood the call and refused it — that is a result, not a server fault |
+| `src/auth.js` | Bearer tokens, one organisation each, plus rate limiting |
+| `src/validate.js` | Request bounds. Amounts are parsed with `BigInt`, never as doubles — a uint64 of minor units exceeds what a double holds exactly |
 | `src/check.js` | Connectivity probe |
+| `src/probe-events.mjs` | Shows which peer can actually deliver events |
 | `public/index.html` | The page. No build step, no framework |
 
 Two details that cost time and are worth knowing:

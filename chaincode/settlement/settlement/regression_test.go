@@ -1,6 +1,9 @@
 package settlement
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Regression tests for defects found in review. Each one failed against the
 // code as it stood before the fix, with the mock stub reproducing Fabric's real
@@ -247,5 +250,78 @@ func TestListTransfers_IsAFullLedgerView(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("non-party sees %d transfers, want 1 — this is a read-only ledger view", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input bounds (Phase A hardening)
+// ---------------------------------------------------------------------------
+
+// Unbounded caller-controlled strings are written to every peer's disk and kept
+// forever. The gateway validates too, but the CLI talks to the peer directly,
+// so the contract has to be the one that holds.
+func TestCreateTransfer_RejectsOversizedAndMalformedInput(t *testing.T) {
+	l := fundedLedger(t)
+	long := strings.Repeat("x", 300)
+
+	for _, tc := range []struct {
+		name, want                        string
+		id, sCcy, pCcy, quote, org, payee string
+	}{
+		{"oversized transferID", "transferID is 300 bytes",
+			long, aed, inr, quoteID, payoutOrg, payeeRef},
+		{"oversized quoteID", "quoteID is 300 bytes",
+			"ok-1", aed, inr, long, payoutOrg, payeeRef},
+		{"oversized payeeRef", "payoutPayeeRef is 300 bytes",
+			"ok-2", aed, inr, quoteID, payoutOrg, long},
+		{"space in transferID", "contains ' '",
+			"has space", aed, inr, quoteID, payoutOrg, payeeRef},
+		{"newline in transferID", "contains '\\n'",
+			"a\nb", aed, inr, quoteID, payoutOrg, payeeRef},
+		{"lowercase currency", "must be three capital letters",
+			"ok-3", "aed", inr, quoteID, payoutOrg, payeeRef},
+		{"four-letter currency", "must be three letters",
+			"ok-4", "AEDX", inr, quoteID, payoutOrg, payeeRef},
+		{"empty payout currency", "must be three letters",
+			"ok-5", aed, "", quoteID, payoutOrg, payeeRef},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := l.create(senderOrg, tc.id, senderLeg, tc.sCcy,
+				payoutLeg, tc.pCcy, tc.quote, expiresAt, tc.org, tc.payee)
+			requireErrContains(t, err, tc.want)
+		})
+	}
+
+	// Nothing above was written.
+	got, err := l.sc.ListTransfers(l.as(senderOrg))
+	if err != nil {
+		t.Fatalf("ListTransfers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("%d transfers were written by rejected calls", len(got))
+	}
+}
+
+func TestCreateTransfer_AcceptsRealisticIdentifiers(t *testing.T) {
+	l := fundedLedger(t)
+	// The shapes the demo and the scripts actually use, including the colon in
+	// a salted-hash reference and the dots an MSP ID may carry.
+	if err := l.create(senderOrg, "TP-UAE-IN-1793876626", senderLeg, aed,
+		payoutLeg, inr, "quote-2026-11-06.0001", expiresAt, payoutOrg,
+		"sha256:8f14e45fceea167a5a36dedd4bea2543c0ffee"); err != nil {
+		t.Fatalf("a realistic transfer was rejected: %v", err)
+	}
+	if got := l.transfer("TP-UAE-IN-1793876626").State; got != StateCaptured {
+		t.Fatalf("state = %s, want %s", got, StateCaptured)
+	}
+}
+
+func TestSeedBalance_RejectsMalformedCurrency(t *testing.T) {
+	l := newLedger(t, t0)
+	requireErrContains(t, l.seed(senderOrg, "aed", 100), "must be three capital letters")
+	requireErrContains(t, l.seed(senderOrg, "RUPEES", 100), "must be three letters")
+	requireErrContains(t, l.seed(senderOrg, "", 100), "must be three letters")
+	if got := l.balance(senderOrg, aed).Total; got != 0 {
+		t.Fatalf("a rejected seed credited %d", got)
 	}
 }

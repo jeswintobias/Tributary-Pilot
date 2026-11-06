@@ -47,6 +47,7 @@ header .wrap{padding-block:.9rem;display:flex;flex-wrap:wrap;gap:1rem;align-item
 .ident{display:flex;gap:.4rem;flex-wrap:wrap}
 .ident button{font:inherit;font-size:.82rem;padding:.42rem .7rem;border:1px solid var(--rule);border-radius:3px;background:var(--surface);color:var(--ink-soft);cursor:pointer}
 .ident button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.ident button[disabled]{opacity:.45;cursor:not-allowed}
 .ident button .ro{font-family:var(--mono);font-size:.62rem;opacity:.85;margin-left:.3rem}
 
 main .wrap{padding-block:1.3rem;display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:1.1rem}
@@ -129,6 +130,19 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
     <div class="col">
       <div class="banner" id="banner" role="status"></div>
 
+      <section class="card" id="signin" hidden>
+        <div class="hd"><h2>Sign in</h2><span class="eyebrow">one token, one organisation</span></div>
+        <div class="bd">
+          <p class="empty">A token identifies which organisation you act as. The service prints
+          them on startup and keeps them in <span class="mono">.tokens.json</span>. Sign in once
+          per organisation you want to switch between.</p>
+          <form id="signinForm">
+            <label>Bearer token<input name="token" autocomplete="off" spellcheck="false" required></label>
+            <button class="primary" type="submit">Sign in</button>
+          </form>
+        </div>
+      </section>
+
       <section class="card">
         <div class="hd"><h2>Transfers</h2><span class="eyebrow" id="tfcount">—</span></div>
         <div class="bd" id="transfers"><p class="empty">Reading the ledger…</p></div>
@@ -166,7 +180,7 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
       </section>
 
       <section class="card">
-        <div class="hd"><h2>Seed balance</h2><span class="eyebrow">phase 0 scaffolding</span></div>
+        <div class="hd"><h2>Seed balance</h2><span class="eyebrow">dev only · mints money</span></div>
         <div class="bd">
           <form id="seed">
             <div class="row2">
@@ -194,7 +208,9 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
 
 <script>
 const $ = (s) => document.querySelector(s);
-const state = { as: 'Org1MSP', orgs: [], busy: false };
+// tokens: mspId -> bearer token. A token IS the identity; the server no longer
+// accepts an organisation named in a request body.
+const state = { as: null, orgs: [], tokens: {}, devMode: false };
 
 const minor = (v) => (Number(v) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 });
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -206,19 +222,26 @@ function banner(kind, text, detail) {
   if (kind === 'ok') setTimeout(() => el.classList.remove('show'), 4000);
 }
 
-async function api(path, options) {
-  const res = await fetch(path, options);
+async function api(path, options = {}, token = state.tokens[state.as]) {
+  const headers = { ...(options.headers ?? {}) };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(path, { ...options, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
   return body;
 }
 
 function renderIdents() {
-  $('#ident').innerHTML = state.orgs.map((o) => `
+  $('#ident').innerHTML = state.orgs.map((o) => {
+    const signedIn = Boolean(state.tokens[o.mspId]);
+    return `
     <button type="button" data-msp="${o.mspId}" aria-pressed="${o.mspId === state.as}"
-            title="${esc(o.role)}">${esc(o.label)}${o.readOnly ? '<span class="ro">READ-ONLY</span>' : ''}</button>
-  `).join('');
-  $('#ident').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+            ${signedIn ? '' : 'disabled'} title="${esc(signedIn ? o.role : 'not signed in')}">
+      ${esc(o.label)}${o.readOnly ? '<span class="ro">READ-ONLY</span>' : ''}
+      ${signedIn ? '' : '<span class="ro">LOCKED</span>'}
+    </button>`;
+  }).join('');
+  $('#ident').querySelectorAll('button:not([disabled])').forEach((b) => b.addEventListener('click', () => {
     state.as = b.dataset.msp;
     renderIdents();
     refresh();
@@ -271,8 +294,7 @@ function renderTransfers(transfers) {
     b.disabled = true;
     try {
       const out = await api(`/api/transfers/${encodeURIComponent(b.dataset.id)}/${b.dataset.act}`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ as: state.as }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
       });
       banner('ok', `${b.dataset.act} committed`, `tx ${out.transactionId}`);
     } catch (err) {
@@ -298,7 +320,7 @@ function renderBalances(balances) {
 
 async function refresh() {
   try {
-    const s = await api(`/api/state?as=${encodeURIComponent(state.as)}`);
+    const s = await api('/api/state');
     renderTransfers(s.transfers);
     renderBalances(s.balances);
     $('#dot').classList.remove('off');
@@ -329,7 +351,6 @@ $('#create').addEventListener('submit', async (e) => {
   btn.disabled = true;
   const f = new FormData(e.target);
   const body = Object.fromEntries(f.entries());
-  body.as = state.as;
   body.expiresAt = Math.floor(Date.now() / 1000) + Number(body.expiresIn || 900);
   delete body.expiresIn;
   try {
@@ -348,7 +369,6 @@ $('#seed').addEventListener('submit', async (e) => {
   const btn = e.target.querySelector('button[type=submit]');
   btn.disabled = true;
   const body = Object.fromEntries(new FormData(e.target).entries());
-  body.as = state.as;
   try {
     await api('/api/seed', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     banner('ok', 'Balance credited');
@@ -358,7 +378,7 @@ $('#seed').addEventListener('submit', async (e) => {
 });
 
 function streamEvents() {
-  const src = new EventSource('/api/events');
+  const src = new EventSource(`/api/events?token=${encodeURIComponent(state.tokens[state.as])}`);
   const list = $('#events');
   src.addEventListener('message', (m) => {
     const e = JSON.parse(m.data);
@@ -373,14 +393,54 @@ function streamEvents() {
   src.addEventListener('error', () => { /* EventSource retries on its own */ });
 }
 
+// A token identifies its holder, so signing in is just "tell me who this is".
+async function signInWith(token) {
+  const who = await api('/api/session', {}, token);
+  state.tokens[who.mspId] = token;
+  state.as ??= who.mspId;
+  return who;
+}
+
+async function begin() {
+  renderIdents();
+  $('#signin').hidden = Object.keys(state.tokens).length > 0;
+  if (!state.as) return;
+  await refresh();
+  streamEvents();
+  setInterval(refresh, 8000);
+}
+
+$('#signinForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = e.target.querySelector('input');
+  try {
+    const who = await signInWith(input.value.trim());
+    banner('ok', `Signed in as ${who.label}`);
+    input.value = '';
+    await begin();
+  } catch (err) {
+    banner('err', 'That token was not accepted', err.message);
+  }
+});
+
 (async function start() {
   try {
-    const meta = await api('/api/orgs');
+    const meta = await api('/api/orgs', {}, null);
     state.orgs = meta.orgs;
-    renderIdents();
-    await refresh();
-    streamEvents();
-    setInterval(refresh, 8000);
+    state.devMode = meta.devMode;
+
+    // In development, and only from this machine, the service hands the page
+    // its own tokens so the demo is one click. Otherwise you sign in.
+    if (meta.devMode) {
+      try {
+        const { tokens } = await api('/api/dev/tokens', {}, null);
+        for (const [token, mspId] of Object.entries(tokens)) {
+          state.tokens[mspId] = token;
+          state.as ??= mspId;
+        }
+      } catch { /* not available — fall back to signing in */ }
+    }
+    await begin();
   } catch (err) {
     banner('err', 'Gateway could not reach the network', err.message);
   }

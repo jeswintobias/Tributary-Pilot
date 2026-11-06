@@ -86,6 +86,64 @@ should have.
 | T6.2 | A modified upstream dependency is shipped without anyone noticing | Upstream DRUNIX is never vendored or modified. `network/` only wraps its scripts, and the commit we tested against is recorded | `network/README.md` records the exact upstream commit |
 | T6.3 | Concurrent transfers on the same balance key silently overwrite each other | DRUNIX's Committing Peer runs MVCC validation; the losing transaction is marked invalid and must be resubmitted | **Planned** — concurrency test on the live network |
 
+## T7 — The service layer
+
+Everything above concerns the chaincode. The gateway in `services/gateway` sits
+in front of it, holds signing keys, and until Phase A had **no access control of
+any kind**: it listened on every network interface, required no credential, and
+took the organisation to act as from the request body. Anyone who could reach
+the port could move the payout bank's money. Strong vault, open reception desk.
+
+That is fixed. What follows is the state after Phase A, including the parts
+still open.
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T7.1 | Anyone on the network reaches the service and moves money | Binds to `127.0.0.1` unless `GATEWAY_HOST` overrides it, and the startup banner warns when it does | Verified: refused on the LAN address, reachable on loopback |
+| T7.2 | An unauthenticated caller submits transactions | Every endpoint except the public org roster requires a bearer token; 401 otherwise | Verified: no token and a wrong token both return 401, for reads and writes |
+| T7.3 | A caller acts as an organisation it is not | **A token maps to exactly one MSP.** The identity comes from the token, never from the request. The `as` field was removed | Verified: a request from SenderOrg's token naming `Org2MSP` in the body credited `Org1MSP` |
+| T7.4 | Money minted from nothing through `SeedBalance` | The endpoint returns 403 unless `GATEWAY_DEV=1` | Verified: 403 in the default posture |
+| T7.5 | Request flooding jams the ledger through MVCC conflicts | Fixed window of 60 requests per 10s per token, `Retry-After` on 429 | Verified: 70 requests produced 53×200 and 17×429 |
+| T7.6 | Unbounded input bloats every peer's disk | Length and charset bounds on every identifier, three-letter currency codes, integer-only amounts, 16KB body cap. **Enforced in the chaincode as well**, because the CLI never passes through the gateway | `TestCreateTransfer_RejectsOversizedAndMalformedInput`, plus HTTP 400 for each case |
+| T7.7 | Amounts silently rounded in transit | Amounts travel as decimal strings and are parsed with `BigInt`. A `uint64` in minor units exceeds what a JavaScript double holds exactly | Verified: fractional and negative amounts rejected |
+| T7.8 | A weak or default credential ships with the service | Tokens are generated with `crypto.randomBytes` on first boot and written `0600`. There is no default | Verified in the startup banner |
+
+### Still open, and deliberately recorded
+
+1. **No TLS on the service.** The browser hop is plain HTTP. Acceptable only
+   while it is bound to loopback. Anything else needs a proxy terminating TLS.
+2. **One gateway holds all three organisations' keys.** This is a
+   single-operator demo convenience and would be indefensible in production,
+   where each organisation runs its own gateway with its own key. Mitigated in
+   spirit by T7.3 — a token cannot cross organisations — but the keys are
+   still in one process.
+3. **`SeedBalance` still exists in the chaincode.** The gateway refuses it, but
+   any channel member can call it with the CLI. It mints only to the caller's
+   own account, so the exposure is bounded, and it disappears with the Phase 1
+   token contract.
+4. **Signing keys sit unencrypted on disk.** Test-network material today.
+   Production needs an HSM; that is the ₹8,000 line in the Phase 1 budget.
+5. **Dependency supply chain.** `npm install` reports packages with install
+   scripts, including one that compiles native code. Versions are pinned and a
+   lockfile is committed; nothing audits them.
+6. **No per-call audit trail in the service.** The ledger records every
+   committed transaction, but the gateway does not correlate its own requests
+   to transaction IDs, so a refused call leaves no durable record.
+
+### The layers, and which exist
+
+```
+1. Network      who can reach the port?       ✅ loopback only
+2. Service auth who is this caller?           ✅ bearer token -> one MSP
+3. Channel      is this org on the network?   ✅
+4. Endorsement  did enough banks agree?       ✅ AND(Org1, Org2)
+5. Chaincode    is this caller allowed?       ✅
+6. Validation   is the signed result valid?   ✅
+7. MVCC         did state change underneath?  ✅
+```
+
+Before Phase A, layers 1 and 2 did not exist.
+
 ## Found in review, and fixed
 
 Two defects were found when an external reviewer read the contract against
@@ -108,6 +166,10 @@ patching:
    describes, which the first implementation had collapsed into one step.
 
 ## Known gaps in Phase 0
+
+0. **The service layer carries its own risks**, listed in T7 above with six
+   still open — TLS and the shared-key gateway being the two that matter most.
+
 
 Stated plainly, because the whole point of this document is that we do not
 overclaim:

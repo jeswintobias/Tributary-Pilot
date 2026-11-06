@@ -653,8 +653,10 @@ func TestEmptyArguments_Rejected(t *testing.T) {
 	}{
 		{"empty transferID", l.create(senderOrg, "", senderLeg, aed, payoutLeg, inr,
 			quoteID, expiresAt, payoutOrg, payeeRef), "transferID must not be empty"},
+		// Currency codes are now shape-checked, so an empty one fails as a
+		// malformed code rather than as a missing field.
 		{"empty senderCcy", l.create(senderOrg, "e1", senderLeg, "", payoutLeg, inr,
-			quoteID, expiresAt, payoutOrg, payeeRef), "senderCcy must not be empty"},
+			quoteID, expiresAt, payoutOrg, payeeRef), "must be three letters"},
 		{"empty quoteID", l.create(senderOrg, "e2", senderLeg, aed, payoutLeg, inr,
 			"", expiresAt, payoutOrg, payeeRef), "quoteID must not be empty"},
 		{"empty payeeRef", l.create(senderOrg, "e3", senderLeg, aed, payoutLeg, inr,
