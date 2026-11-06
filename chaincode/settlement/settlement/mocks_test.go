@@ -36,9 +36,11 @@ type mockStub struct {
 
 	committed map[string][]byte // what GetState sees
 	pending   map[string][]byte // this transaction's write set
+	reads     map[string]bool   // this transaction's read set
 	events    map[string][]byte // committed events
 	pendingEv map[string][]byte
 	now       int64
+	txSeq     int // distinct transaction IDs, as a real chain gives
 
 	// getStateErr, when set, makes GetState for that exact key fail.
 	getStateErr map[string]error
@@ -48,6 +50,7 @@ func newMockStub(now int64) *mockStub {
 	return &mockStub{
 		committed:   map[string][]byte{},
 		pending:     map[string][]byte{},
+		reads:       map[string]bool{},
 		events:      map[string][]byte{},
 		pendingEv:   map[string][]byte{},
 		now:         now,
@@ -56,7 +59,13 @@ func newMockStub(now int64) *mockStub {
 }
 
 // GetState reads committed state only — never this transaction's own writes.
+//
+// Every key read is recorded. Fabric's MVCC check compares a transaction's read
+// set against the versions committed by the time it is validated, so the read
+// set is what decides whether two transactions can run concurrently. Tracking
+// it lets a test assert non-conflict directly instead of inferring it.
 func (m *mockStub) GetState(key string) ([]byte, error) {
+	m.reads[key] = true
 	if err, ok := m.getStateErr[key]; ok {
 		return nil, err
 	}
@@ -96,7 +105,11 @@ func (m *mockStub) SetEvent(name string, payload []byte) error {
 	return nil
 }
 
-func (m *mockStub) GetTxID() string { return "mock-tx" }
+// GetTxID gives each transaction its own ID. Journal entry keys are built from
+// it, so a constant would make two transactions write the same entry key and
+// the second would silently overwrite the first — hiding exactly the kind of
+// bug the journal exists to make impossible.
+func (m *mockStub) GetTxID() string { return fmt.Sprintf("mock-tx-%d", m.txSeq) }
 
 // GetStateByPartialCompositeKey ranges over COMMITTED state in key order, as
 // Fabric does — this transaction's own writes are not visible to it either.
@@ -106,6 +119,7 @@ func (m *mockStub) GetStateByPartialCompositeKey(objectType string, keys []strin
 	for k := range m.committed {
 		if strings.HasPrefix(k, prefix) {
 			matched = append(matched, k)
+			m.reads[k] = true
 		}
 	}
 	// Fabric returns a range in key order; sorting keeps the mock faithful and
@@ -156,6 +170,30 @@ func (m *mockStub) discardTx() { m.resetTx() }
 func (m *mockStub) resetTx() {
 	m.pending = map[string][]byte{}
 	m.pendingEv = map[string][]byte{}
+	m.reads = map[string]bool{}
+	m.txSeq++
+}
+
+// touched is every key this transaction read or wrote: its MVCC footprint. Two
+// transactions can be endorsed concurrently without either being invalidated
+// only if one's writes do not meet the other's footprint.
+func (m *mockStub) touched() map[string]bool {
+	out := map[string]bool{}
+	for k := range m.reads {
+		out[k] = true
+	}
+	for k := range m.pending {
+		out[k] = true
+	}
+	return out
+}
+
+func (m *mockStub) writtenKeys() map[string]bool {
+	out := map[string]bool{}
+	for k := range m.pending {
+		out[k] = true
+	}
+	return out
 }
 
 type mockClientIdentity struct {
@@ -299,3 +337,110 @@ func (l *ledger) transfer(id string) Transfer {
 }
 
 func (l *ledger) lastEvent(name string) []byte { return l.stub.events[name] }
+
+// ---------------------------------------------------------------------------
+// Netting harness
+// ---------------------------------------------------------------------------
+
+// thirdOrg is a third institution, so the multilateral cases have somewhere for
+// value to pass through rather than merely back and forth.
+const thirdOrg = "PlatformOrgMSP"
+
+func (l *ledger) submit(org, obligationID, creditor, ccy string, amount uint64) error {
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.SubmitObligation(c, obligationID, creditor, ccy, amount)
+	})
+}
+
+func (l *ledger) closeWindow(org, ccy string, seq int64) (*Window, error) {
+	var w *Window
+	err := l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		var innerErr error
+		w, innerErr = l.sc.CloseWindow(c, ccy, seq)
+		return innerErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (l *ledger) exposure(account, ccy string) uint64 {
+	l.t.Helper()
+	e, err := l.sc.GetExposure(l.as(account), account, ccy)
+	if err != nil {
+		l.t.Fatalf("GetExposure(%s, %s): %v", account, ccy, err)
+	}
+	return e.Outstanding
+}
+
+func (l *ledger) window(ccy string, seq int64) Window {
+	l.t.Helper()
+	w, err := l.sc.GetWindow(l.as(senderOrg), ccy, seq)
+	if err != nil {
+		l.t.Fatalf("GetWindow(%s, %d): %v", ccy, seq, err)
+	}
+	return *w
+}
+
+// seqNow is the window a submission at the ledger's current simulated time
+// lands in.
+func (l *ledger) seqNow() int64 { return windowSeq(l.stub.now) }
+
+// footprint runs one call and reports its MVCC footprint: every key it read or
+// wrote, and separately every key it wrote. The call must succeed.
+//
+// This is how the concurrency claims in pool_test.go are checked. Rather than
+// asserting that a design "avoids contention", a test can take two
+// transactions' footprints and show that neither writes anything the other
+// touched — which is precisely the condition under which Fabric endorses both
+// without invalidating either.
+func (l *ledger) footprint(org string, call func(contractapi.TransactionContextInterface) error) (touched, written map[string]bool) {
+	l.t.Helper()
+	if err := call(l.as(org)); err != nil {
+		l.stub.discardTx()
+		l.t.Fatalf("call as %s failed: %v", org, err)
+	}
+	touched, written = l.stub.touched(), l.stub.writtenKeys()
+	l.stub.commitTx()
+	return touched, written
+}
+
+// keyKind reports the object type a composite key belongs to, so a test can say
+// which kind of state a transaction touched.
+func keyKind(key string) string {
+	parts := strings.Split(key, "\x00")
+	if len(parts) < 2 {
+		return key
+	}
+	return parts[1]
+}
+
+func overlap(a, b map[string]bool) []string {
+	var shared []string
+	for k := range a {
+		if b[k] {
+			shared = append(shared, keyKind(k))
+		}
+	}
+	sort.Strings(shared)
+	return shared
+}
+
+// probe runs one call, records its MVCC footprint and then throws the write set
+// away, leaving the ledger exactly as it was.
+//
+// This is what lets two transactions be compared as if they had been endorsed
+// against the same state, which is the situation MVCC actually arbitrates. A
+// comparison that committed the first call before running the second would be
+// measuring a sequence, not a race.
+func (l *ledger) probe(org string, call func(contractapi.TransactionContextInterface) error) (touched, written map[string]bool) {
+	l.t.Helper()
+	if err := call(l.as(org)); err != nil {
+		l.stub.discardTx()
+		l.t.Fatalf("probe as %s failed: %v", org, err)
+	}
+	touched, written = l.stub.touched(), l.stub.writtenKeys()
+	l.stub.discardTx()
+	return touched, written
+}

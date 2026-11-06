@@ -57,6 +57,7 @@ const (
 	KindLock    = "LOCK"    // holder -> escrow:<transferID>
 	KindRelease = "RELEASE" // escrow:<transferID> -> holder (abort)
 	KindSettle  = "SETTLE"  // escrow:<transferID> -> payee (commit)
+	KindNet     = "NET"     // net debtor -> net creditor (netting window close)
 )
 
 // Entry is one immutable movement of value. It is never updated or deleted.
@@ -90,9 +91,10 @@ type AccountBalance struct {
 	Balance int64  `json:"balance"` // Credits - Debits; negative for issuance
 }
 
-// Available is what this account can spend. Locked funds have moved to an
-// escrow account, so there is nothing to subtract.
-func (a AccountBalance) Available() int64 { return a.Balance }
+// Balance alone is not what an account can spend — see journal.available,
+// which subtracts the value already committed to netting windows. The
+// subtraction cannot live on this struct, because exposure is a separate key
+// and a copy of it folded in here would be stale the moment it was written.
 
 // IssuanceAccount is the counter-account value is issued against.
 func IssuanceAccount(ccy string) string { return issuanceAccountPrefix + ccy }
@@ -110,11 +112,52 @@ func EscrowAccount(transferID string) string { return escrowAccountPrefix + tran
 type journal struct {
 	ctx   contractapi.TransactionContextInterface
 	cache map[string]AccountBalance
-	n     int // entry index within this transaction
+	// expo is the same write-through cache for exposure records. Releasing a
+	// netting window's reservation and posting its net movement happen in one
+	// transaction, so the posting has to see the release — and GetState would
+	// still return the pre-transaction value. Keeping exposure in the journal is
+	// what makes the two consistent.
+	expo map[string]Exposure
+	n    int // entry index within this transaction
 }
 
 func newJournal(ctx contractapi.TransactionContextInterface) *journal {
-	return &journal{ctx: ctx, cache: map[string]AccountBalance{}}
+	return &journal{
+		ctx:   ctx,
+		cache: map[string]AccountBalance{},
+		expo:  map[string]Exposure{},
+	}
+}
+
+// exposure returns this transaction's view of an account's reservation.
+func (j *journal) exposure(account, ccy string) (Exposure, error) {
+	key, err := exposureKey(j.ctx, account, ccy)
+	if err != nil {
+		return Exposure{}, err
+	}
+	if cached, ok := j.expo[key]; ok {
+		return cached, nil
+	}
+	e, err := readExposure(j.ctx, account, ccy)
+	if err != nil {
+		return Exposure{}, err
+	}
+	j.expo[key] = e
+	return e, nil
+}
+
+// setExposure writes a reservation and makes it visible to the rest of this
+// transaction.
+func (j *journal) setExposure(e Exposure) error {
+	key, err := exposureKey(j.ctx, e.Account, e.Ccy)
+	if err != nil {
+		return err
+	}
+	if err := putExposure(j.ctx, e); err != nil {
+		return err
+	}
+	j.expo[key] = e
+	return nil
 }
 
 func accountKey(ctx contractapi.TransactionContextInterface, account, ccy string) (string, error) {
@@ -156,6 +199,31 @@ func (j *journal) balance(account, ccy string) (AccountBalance, error) {
 	return b, nil
 }
 
+// available is what an account may actually move: its balance less the value
+// it has already committed to netting windows that have not settled.
+//
+// Every debit goes through this, which is what keeps the two settlement paths
+// from spending the same money. Without it an institution could commit its
+// whole balance to a netting window and then lock the same funds again through
+// the two-phase commit, and both paths would believe they had cover. The
+// committed figure is returned alongside so the error message can say why the
+// funds are unavailable rather than merely that they are.
+//
+// Issuance accounts never reach this: going negative is their purpose.
+func (j *journal) available(account, ccy string) (avail int64, committed uint64, err error) {
+	b, err := j.balance(account, ccy)
+	if err != nil {
+		return 0, 0, err
+	}
+	e, err := j.exposure(account, ccy)
+	if err != nil {
+		return 0, 0, err
+	}
+	// Outstanding is bounded at submission time, so this subtraction stays in
+	// range.
+	return b.Balance - int64(e.Outstanding), e.Outstanding, nil
+}
+
 func (j *journal) putBalance(b AccountBalance) error {
 	b.Balance = int64(b.Credits) - int64(b.Debits)
 	key, err := accountKey(j.ctx, b.Account, b.Ccy)
@@ -190,9 +258,21 @@ func (j *journal) post(kind, ref, debit, credit, ccy string, amount uint64) erro
 	if err != nil {
 		return err
 	}
-	if !isIssuanceAccount(debit) && from.Balance < int64(amount) {
-		return fmt.Errorf("account %s has %d available %s, needs %d",
-			debit, from.Balance, ccy, amount)
+	if !isIssuanceAccount(debit) {
+		avail, committed, err := j.available(debit, ccy)
+		if err != nil {
+			return err
+		}
+		if avail < int64(amount) {
+			if committed > 0 {
+				return fmt.Errorf(
+					"account %s holds %d %s with %d committed to netting, "+
+						"leaving %d available, needs %d",
+					debit, from.Balance, ccy, committed, avail, amount)
+			}
+			return fmt.Errorf("account %s has %d available %s, needs %d",
+				debit, avail, ccy, amount)
+		}
 	}
 	to, err := j.balance(credit, ccy)
 	if err != nil {

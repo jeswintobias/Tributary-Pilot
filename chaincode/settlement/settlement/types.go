@@ -49,6 +49,13 @@ const (
 	EventAborted  = "TransferAborted"
 )
 
+// Netting-path events. The window event carries the compression achieved, so a
+// treasury dashboard can report liquidity saved without re-deriving it.
+const (
+	EventObligationSubmitted = "ObligationSubmitted"
+	EventWindowSettled       = "WindowSettled"
+)
+
 // Transfer is one remittance with two legs that must settle together or not at
 // all.
 //
