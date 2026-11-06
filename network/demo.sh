@@ -157,8 +157,8 @@ echo "after Accept:" && query 2 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
 
 invoke 1 "{\"Args\":[\"Prepare\",\"${HAPPY}\"]}"
 echo "after Prepare:" && query 1 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
-echo "SenderOrg AED (expect locked 220000):" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
-echo "PayoutBankOrg INR (expect locked 3000000):" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
+echo "SenderOrg AED (expect balance down by 220000, which is now in escrow):" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
+echo "PayoutBankOrg INR (expect balance down by 3000000, which is now in escrow):" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
 
 # ---------------------------------------------------------------------------
 step "T2.2 — a single organisation must not be able to commit"
@@ -203,15 +203,15 @@ SHORT_EXPIRY=$(( $(date +%s) + 120 ))
 invoke 1 "{\"Args\":[\"CreateTransfer\",\"${ABORT}\",\"110000\",\"AED\",\"1500000\",\"INR\",\"quote-abort-${STAMP}\",\"${SHORT_EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
 invoke 2 "{\"Args\":[\"Accept\",\"${ABORT}\"]}"
 invoke 1 "{\"Args\":[\"Prepare\",\"${ABORT}\"]}"
-echo "locked while PREPARED:" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
+echo "escrow holds the locked legs while PREPARED:" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
 
 log "waiting for the transfer to expire at ${SHORT_EXPIRY}"
 while [ "$(date +%s)" -le "${SHORT_EXPIRY}" ]; do sleep 5; done
 
 invoke 2 "{\"Args\":[\"Abort\",\"${ABORT}\"]}"
 echo "after Abort:" && query 1 "{\"Args\":[\"GetTransfer\",\"${ABORT}\"]}"
-echo "SenderOrg AED (locks released, total unchanged):" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
-echo "PayoutBankOrg INR (locks released, total unchanged):" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
+echo "SenderOrg AED (escrow released, payer whole again):" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
+echo "PayoutBankOrg INR (escrow released, payer whole again):" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
 echo "Beneficiary INR (must be unchanged by the abort):" && query 2 "{\"Args\":[\"GetBalance\",\"${PAYEE}\",\"INR\"]}"
 
 printf '\n\033[1;32m── demo complete\033[0m\n'

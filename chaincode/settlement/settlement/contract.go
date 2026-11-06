@@ -12,7 +12,6 @@ import (
 
 const (
 	transferKeyPrefix = "transfer"
-	balanceKeyPrefix  = "balance"
 )
 
 // SmartContract implements the Phase 0 settlement two-phase commit.
@@ -90,6 +89,12 @@ func (s *SmartContract) CreateTransfer(
 	if payoutPayeeRef == senderOrg || payoutPayeeRef == payoutOrg {
 		return fmt.Errorf(
 			"payoutPayeeRef %q must not be a party to the transfer", payoutPayeeRef)
+	}
+	// issuance: and escrow: are the journal's own counter-accounts. A payee
+	// that could pose as one could be credited from thin air, or drain another
+	// transfer's locked funds.
+	if isReservedAccount(payoutPayeeRef) {
+		return fmt.Errorf("payoutPayeeRef %q uses a reserved account prefix", payoutPayeeRef)
 	}
 
 	key, err := transferKey(ctx, transferID)
@@ -220,14 +225,18 @@ func (s *SmartContract) Prepare(ctx contractapi.TransactionContextInterface, tra
 		return fmt.Errorf("transfer %q expired at %d (tx time %d)", transferID, t.ExpiresAt, now)
 	}
 
-	book := newBalanceBook(ctx)
-	if err := book.lock(t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+	// A lock is a real movement into the transfer's escrow account, not a flag
+	// on a balance. Locked funds have left the payer, so "available" needs no
+	// arithmetic and no reconciliation.
+	escrow := EscrowAccount(t.TransferID)
+	j := newJournal(ctx)
+	if err := j.post(KindLock, t.TransferID, t.SenderOrg, escrow, t.SenderCcy, t.SenderLegAmount); err != nil {
 		return fmt.Errorf("lock sender leg: %w", err)
 	}
-	if err := book.lock(t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
-		// Both locks are written in the same transaction, so a failure here
-		// discards the sender-leg lock along with everything else in the write
-		// set. There is no partial lock to unwind.
+	if err := j.post(KindLock, t.TransferID, t.PayoutOrg, escrow, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+		// Both postings are in the same transaction, so a failure here discards
+		// the sender-leg entry with everything else in the write set. There is
+		// no half-locked state to unwind.
 		return fmt.Errorf("lock payout leg: %w", err)
 	}
 
@@ -281,15 +290,17 @@ func (s *SmartContract) Commit(ctx contractapi.TransactionContextInterface, tran
 		return fmt.Errorf("transfer %q proof hash mismatch: state was modified after prepare", transferID)
 	}
 
-	// Both legs move through ONE book, so the second leg reads balances the
-	// first leg already changed. Fabric's GetState does not see the current
-	// transaction's own writes, so without this the two legs would read stale
-	// values wherever they touch the same account and currency.
-	book := newBalanceBook(ctx)
-	if err := book.settle(t.SenderOrg, t.PayoutOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+	// Both legs move out of escrow through ONE journal, so the second posting
+	// sees what the first already wrote. Fabric's GetState does not show a
+	// transaction its own writes, so without that shared view two legs touching
+	// one account would each read the pre-transaction value and the second
+	// would discard the first.
+	escrow := EscrowAccount(t.TransferID)
+	j := newJournal(ctx)
+	if err := j.post(KindSettle, t.TransferID, escrow, t.PayoutOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
 		return fmt.Errorf("settle sender leg: %w", err)
 	}
-	if err := book.settle(t.PayoutOrg, t.PayoutPayeeRef, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+	if err := j.post(KindSettle, t.TransferID, escrow, t.PayoutPayeeRef, t.PayoutCcy, t.PayoutLegAmount); err != nil {
 		return fmt.Errorf("settle payout leg: %w", err)
 	}
 
@@ -343,11 +354,12 @@ func (s *SmartContract) Abort(ctx contractapi.TransactionContextInterface, trans
 	}
 
 	if t.State == StatePrepared {
-		book := newBalanceBook(ctx)
-		if err := book.release(t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
+		escrow := EscrowAccount(t.TransferID)
+		j := newJournal(ctx)
+		if err := j.post(KindRelease, t.TransferID, escrow, t.SenderOrg, t.SenderCcy, t.SenderLegAmount); err != nil {
 			return fmt.Errorf("release sender leg: %w", err)
 		}
-		if err := book.release(t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
+		if err := j.post(KindRelease, t.TransferID, escrow, t.PayoutOrg, t.PayoutCcy, t.PayoutLegAmount); err != nil {
 			return fmt.Errorf("release payout leg: %w", err)
 		}
 	}
@@ -374,10 +386,11 @@ func (s *SmartContract) GetTransfer(ctx contractapi.TransactionContextInterface,
 	return &t, nil
 }
 
-// GetBalance returns an account's holding in one currency. An account with no
-// holdings reads as zero rather than as an error.
-func (s *SmartContract) GetBalance(ctx contractapi.TransactionContextInterface, account, ccy string) (*Balance, error) {
-	b, err := newBalanceBook(ctx).get(account, ccy)
+// GetBalance returns an account's position in one currency, folded from its
+// journal entries. An account with no history reads as zero rather than as an
+// error.
+func (s *SmartContract) GetBalance(ctx contractapi.TransactionContextInterface, account, ccy string) (*AccountBalance, error) {
+	b, err := newJournal(ctx).balance(account, ccy)
 	if err != nil {
 		return nil, err
 	}
@@ -412,26 +425,27 @@ func (s *SmartContract) ListTransfers(ctx contractapi.TransactionContextInterfac
 	return out, nil
 }
 
-// ListBalances returns every balance on the ledger, in key order.
+// ListBalances returns every account position on the ledger, in key order.
 //
 // Query-only, for the same reason as ListTransfers.
-func (s *SmartContract) ListBalances(ctx contractapi.TransactionContextInterface) ([]*Balance, error) {
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(balanceKeyPrefix, []string{})
+func (s *SmartContract) ListBalances(ctx contractapi.TransactionContextInterface) ([]*AccountBalance, error) {
+	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(accountKeyPrefix, []string{})
 	if err != nil {
 		return nil, fmt.Errorf("range over balances: %w", err)
 	}
 	defer iter.Close()
 
-	out := []*Balance{}
+	out := []*AccountBalance{}
 	for iter.HasNext() {
 		kv, err := iter.Next()
 		if err != nil {
 			return nil, fmt.Errorf("read next balance: %w", err)
 		}
-		var b Balance
+		var b AccountBalance
 		if err := json.Unmarshal(kv.GetValue(), &b); err != nil {
-			return nil, fmt.Errorf("decode balance at %q: %w", kv.GetKey(), err)
+			return nil, fmt.Errorf("decode account at %q: %w", kv.GetKey(), err)
 		}
+		b.Balance = int64(b.Credits) - int64(b.Debits)
 		out = append(out, &b)
 	}
 	return out, nil
@@ -459,156 +473,10 @@ func (s *SmartContract) SeedBalance(ctx contractapi.TransactionContextInterface,
 	if err != nil {
 		return err
 	}
-	book := newBalanceBook(ctx)
-	b, err := book.get(mspID, ccy)
-	if err != nil {
-		return err
-	}
-	total, err := addU64(b.Total, amount)
-	if err != nil {
-		return fmt.Errorf("credit %s %s: %w", mspID, ccy, err)
-	}
-	b.Total = total
-	return book.put(b)
-}
-
-// ---------------------------------------------------------------------------
-// balanceBook — a per-transaction view of balances
-// ---------------------------------------------------------------------------
-
-// balanceBook caches the balances a single invocation has already written, so
-// that a later read within the same transaction sees them.
-//
-// This matters because Fabric does not give chaincode read-your-writes.
-// txSimulator.SetState appends to the transaction's write set, while
-// queryExecutor.GetState reads the state database directly and never consults
-// it. Two legs that touch the same account and currency would therefore both
-// read the pre-transaction value, and the second write would silently discard
-// the first — creating or destroying value depending on the direction.
-//
-// One book is created per invocation and passed through every balance
-// operation of that invocation. It is never shared between transactions.
-type balanceBook struct {
-	ctx   contractapi.TransactionContextInterface
-	cache map[string]Balance
-}
-
-func newBalanceBook(ctx contractapi.TransactionContextInterface) *balanceBook {
-	return &balanceBook{ctx: ctx, cache: map[string]Balance{}}
-}
-
-// get returns this transaction's current view of a balance: what it has already
-// written, otherwise what is committed. An unknown account reads as zero.
-func (bk *balanceBook) get(account, ccy string) (Balance, error) {
-	if err := requireNonEmpty("account", account); err != nil {
-		return Balance{}, err
-	}
-	if err := requireNonEmpty("ccy", ccy); err != nil {
-		return Balance{}, err
-	}
-	key, err := balanceKey(bk.ctx, account, ccy)
-	if err != nil {
-		return Balance{}, err
-	}
-	if cached, ok := bk.cache[key]; ok {
-		return cached, nil
-	}
-	raw, err := bk.ctx.GetStub().GetState(key)
-	if err != nil {
-		return Balance{}, fmt.Errorf("read balance %s/%s: %w", account, ccy, err)
-	}
-	if raw == nil {
-		return Balance{Account: account, Ccy: ccy}, nil
-	}
-	var b Balance
-	if err := json.Unmarshal(raw, &b); err != nil {
-		return Balance{}, fmt.Errorf("decode balance %s/%s: %w", account, ccy, err)
-	}
-	return b, nil
-}
-
-// put writes a balance to the ledger and to this transaction's own view of it.
-func (bk *balanceBook) put(b Balance) error {
-	if b.Locked > b.Total {
-		// Defensive: every caller below checks its own precondition, so reaching
-		// this means a bug rather than bad input. Fail the transaction instead of
-		// persisting a broken invariant.
-		return fmt.Errorf("invariant violated for %s/%s: locked %d exceeds total %d",
-			b.Account, b.Ccy, b.Locked, b.Total)
-	}
-	key, err := balanceKey(bk.ctx, b.Account, b.Ccy)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(b)
-	if err != nil {
-		return fmt.Errorf("encode balance %s/%s: %w", b.Account, b.Ccy, err)
-	}
-	if err := bk.ctx.GetStub().PutState(key, raw); err != nil {
-		return fmt.Errorf("write balance %s/%s: %w", b.Account, b.Ccy, err)
-	}
-	bk.cache[key] = b
-	return nil
-}
-
-func (bk *balanceBook) lock(account, ccy string, amount uint64) error {
-	b, err := bk.get(account, ccy)
-	if err != nil {
-		return err
-	}
-	if b.Available() < amount {
-		return fmt.Errorf(
-			"account %s has %d available %s, needs %d",
-			account, b.Available(), ccy, amount)
-	}
-	locked, err := addU64(b.Locked, amount)
-	if err != nil {
-		return err
-	}
-	b.Locked = locked
-	return bk.put(b)
-}
-
-func (bk *balanceBook) release(account, ccy string, amount uint64) error {
-	b, err := bk.get(account, ccy)
-	if err != nil {
-		return err
-	}
-	if b.Locked < amount {
-		return fmt.Errorf("account %s has %d locked %s, cannot release %d", account, b.Locked, ccy, amount)
-	}
-	b.Locked -= amount
-	return bk.put(b)
-}
-
-// settle consumes a lock on the payer and credits the payee, in that order.
-func (bk *balanceBook) settle(payer, payee, ccy string, amount uint64) error {
-	from, err := bk.get(payer, ccy)
-	if err != nil {
-		return err
-	}
-	if from.Locked < amount {
-		return fmt.Errorf("payer %s has %d locked %s, cannot settle %d", payer, from.Locked, ccy, amount)
-	}
-	if from.Total < amount {
-		return fmt.Errorf("payer %s has %d total %s, cannot settle %d", payer, from.Total, ccy, amount)
-	}
-	from.Locked -= amount
-	from.Total -= amount
-	if err := bk.put(from); err != nil {
-		return err
-	}
-
-	to, err := bk.get(payee, ccy)
-	if err != nil {
-		return err
-	}
-	total, err := addU64(to.Total, amount)
-	if err != nil {
-		return fmt.Errorf("credit %s %s: %w", payee, ccy, err)
-	}
-	to.Total = total
-	return bk.put(to)
+	// Issuing is a movement too, debited against a liability account, so the
+	// books still balance after money enters the system. The negative balance
+	// on issuance:<CCY> is exactly the amount outstanding.
+	return newJournal(ctx).post(KindIssue, "issue", IssuanceAccount(ccy), mspID, ccy, amount)
 }
 
 // ---------------------------------------------------------------------------
@@ -772,14 +640,6 @@ func transferKey(ctx contractapi.TransactionContextInterface, transferID string)
 	key, err := ctx.GetStub().CreateCompositeKey(transferKeyPrefix, []string{transferID})
 	if err != nil {
 		return "", fmt.Errorf("build transfer key: %w", err)
-	}
-	return key, nil
-}
-
-func balanceKey(ctx contractapi.TransactionContextInterface, account, ccy string) (string, error) {
-	key, err := ctx.GetStub().CreateCompositeKey(balanceKeyPrefix, []string{account, ccy})
-	if err != nil {
-		return "", fmt.Errorf("build balance key: %w", err)
 	}
 	return key, nil
 }

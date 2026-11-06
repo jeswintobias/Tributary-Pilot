@@ -107,7 +107,7 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 		t.Fatalf("after Accept state = %s, want %s", got, StateAccepted)
 	}
 	// Acceptance is consent to the terms, not a movement of value.
-	if got := l.balance(payoutOrg, inr).Locked; got != 0 {
+	if got := l.locked(transferID, inr); got != 0 {
 		t.Fatalf("Accept locked %d; it must lock nothing", got)
 	}
 
@@ -122,13 +122,13 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 	}
 
 	// Both legs are locked but nothing has moved yet.
-	if got := l.balance(senderOrg, aed); got.Total != 1_000_000 || got.Locked != senderLeg {
-		t.Fatalf("sender after Prepare = %+v, want total 1000000 locked %d", got, senderLeg)
+	if got := l.balance(senderOrg, aed); got.Balance != int64(1_000_000-senderLeg) {
+		t.Fatalf("sender after Prepare = %+v, want balance %d", got, 1_000_000-senderLeg)
 	}
-	if got := l.balance(payoutOrg, inr); got.Total != 10_000_000 || got.Locked != payoutLeg {
-		t.Fatalf("payout bank after Prepare = %+v, want total 10000000 locked %d", got, payoutLeg)
+	if got := l.balance(payoutOrg, inr); got.Balance != int64(10_000_000-payoutLeg) {
+		t.Fatalf("payout bank after Prepare = %+v, want balance %d", got, 10_000_000-payoutLeg)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != 0 {
+	if got := l.balance(payeeRef, inr); got.Balance != int64(0) {
 		t.Fatalf("payee credited before Commit: %+v", got)
 	}
 
@@ -143,17 +143,17 @@ func TestCommit_HappyPath_BothLegsMove(t *testing.T) {
 	}
 
 	// Sender leg: SenderOrg -> PayoutBankOrg in AED.
-	if got := l.balance(senderOrg, aed); got.Total != 1_000_000-senderLeg || got.Locked != 0 {
+	if got := l.balance(senderOrg, aed); got.Balance != int64(1_000_000-senderLeg) {
 		t.Fatalf("sender after Commit = %+v, want total %d locked 0", got, 1_000_000-senderLeg)
 	}
-	if got := l.balance(payoutOrg, aed); got.Total != senderLeg {
+	if got := l.balance(payoutOrg, aed); got.Balance != int64(senderLeg) {
 		t.Fatalf("payout bank AED after Commit = %+v, want total %d", got, senderLeg)
 	}
 	// Payout leg: PayoutBankOrg -> beneficiary in INR.
-	if got := l.balance(payoutOrg, inr); got.Total != 10_000_000-payoutLeg || got.Locked != 0 {
+	if got := l.balance(payoutOrg, inr); got.Balance != int64(10_000_000-payoutLeg) {
 		t.Fatalf("payout bank INR after Commit = %+v, want total %d locked 0", got, 10_000_000-payoutLeg)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != payoutLeg {
+	if got := l.balance(payeeRef, inr); got.Balance != int64(payoutLeg) {
 		t.Fatalf("payee after Commit = %+v, want total %d", got, payoutLeg)
 	}
 
@@ -187,7 +187,7 @@ func TestCommit_WithoutPrepare_Fails(t *testing.T) {
 	if got := l.transfer(transferID).State; got != StateAccepted {
 		t.Fatalf("state changed to %s on a rejected Commit", got)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != 0 {
+	if got := l.balance(payeeRef, inr); got.Balance != int64(0) {
 		t.Fatalf("payee was credited by a rejected Commit: %+v", got)
 	}
 }
@@ -210,7 +210,7 @@ func TestCommit_AfterExpiry_Fails(t *testing.T) {
 		t.Fatalf("state = %s after refused Commit, want %s", got, StatePrepared)
 	}
 	// Funds are still locked, not moved — the transfer must now be aborted.
-	if got := l.balance(senderOrg, aed); got.Total != 1_000_000 || got.Locked != senderLeg {
+	if got := l.balance(senderOrg, aed); got.Balance != int64(1_000_000-senderLeg) {
 		t.Fatalf("sender balance disturbed by refused Commit: %+v", got)
 	}
 }
@@ -233,8 +233,8 @@ func TestCreateTransfer_DuplicateID_Rejected(t *testing.T) {
 	}
 	requireErrContains(t, create(t, l), "already exists")
 
-	if got := l.balance(payeeRef, inr); got.Total != payoutLeg {
-		t.Fatalf("payee paid %d, want exactly one payout of %d", got.Total, payoutLeg)
+	if got := l.balance(payeeRef, inr); got.Balance != int64(payoutLeg) {
+		t.Fatalf("payee paid %d, want exactly one payout of %d", got.Balance, payoutLeg)
 	}
 }
 
@@ -266,9 +266,16 @@ func TestPrepare_InsufficientAvailable_Fails(t *testing.T) {
 
 	requireErrContains(t, l.prepare(senderOrg, second), "available")
 
-	// The first transfer's lock is intact and the second took nothing.
-	if got := l.balance(senderOrg, aed); got.Total != senderLeg || got.Locked != senderLeg {
-		t.Fatalf("sender = %+v, want total %d locked %d", got, senderLeg, senderLeg)
+	// The first transfer's lock is intact and the second took nothing: the
+	// payer's whole balance has moved into the first transfer's escrow.
+	if got := l.balance(senderOrg, aed); got.Balance != 0 {
+		t.Fatalf("sender = %+v, want balance 0 with everything in escrow", got)
+	}
+	if got := l.locked(transferID, aed); got != int64(senderLeg) {
+		t.Fatalf("escrow holds %d, want %d", got, senderLeg)
+	}
+	if got := l.locked(transferID+"-B", aed); got != 0 {
+		t.Fatalf("the refused prepare put %d into escrow", got)
 	}
 	if got := l.transfer(second).State; got != StateAccepted {
 		t.Fatalf("second transfer state = %s, want %s", got, StateAccepted)
@@ -293,13 +300,13 @@ func TestAbort_AfterExpiry_RefundsBothLegs(t *testing.T) {
 	}
 
 	// Full refund: totals untouched, locks released, payee never credited.
-	if got := l.balance(senderOrg, aed); got.Total != 1_000_000 || got.Locked != 0 {
+	if got := l.balance(senderOrg, aed); got.Balance != int64(1_000_000) {
 		t.Fatalf("sender after Abort = %+v, want total 1000000 locked 0", got)
 	}
-	if got := l.balance(payoutOrg, inr); got.Total != 10_000_000 || got.Locked != 0 {
+	if got := l.balance(payoutOrg, inr); got.Balance != int64(10_000_000) {
 		t.Fatalf("payout bank after Abort = %+v, want total 10000000 locked 0", got)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != 0 {
+	if got := l.balance(payeeRef, inr); got.Balance != int64(0) {
 		t.Fatalf("payee credited by an Abort: %+v", got)
 	}
 
@@ -333,7 +340,7 @@ func TestAbort_BeforeAnyLock_NeedsNoExpiry(t *testing.T) {
 			if got := l.transfer(transferID).State; got != StateAborted {
 				t.Fatalf("state = %s, want %s", got, StateAborted)
 			}
-			if got := l.balance(senderOrg, aed); got.Locked != 0 || got.Total != 1_000_000 {
+			if got := l.balance(senderOrg, aed); got.Balance != int64(1_000_000) {
 				t.Fatalf("sender disturbed by the abort: %+v", got)
 			}
 		})
@@ -366,7 +373,7 @@ func TestCommit_UnauthorizedOrg_Fails(t *testing.T) {
 	if got := l.transfer(transferID).State; got != StatePrepared {
 		t.Fatalf("a non-party moved the transfer to %s", got)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != 0 {
+	if got := l.balance(payeeRef, inr); got.Balance != int64(0) {
 		t.Fatalf("a non-party caused a payout: %+v", got)
 	}
 }
@@ -415,8 +422,12 @@ func TestAmounts_IntegerExact(t *testing.T) {
 	if err := l.seed(payoutOrg, inr, huge); err != nil {
 		t.Fatalf("seed payout bank: %v", err)
 	}
-	if got := l.balance(senderOrg, aed).Total; got != huge {
+	if got := l.balance(senderOrg, aed).Balance; got != int64(huge) {
 		t.Fatalf("seeded %d, read back %d — precision was lost", huge, got)
+	}
+	// Issuance carries the mirror image: everything outstanding, negative.
+	if got := l.balance(IssuanceAccount(aed), aed).Balance; got != -int64(huge) {
+		t.Fatalf("issuance shows %d, want %d", got, -int64(huge))
 	}
 
 	if err := l.create(senderOrg, transferID, huge, aed, huge, inr,
@@ -429,14 +440,14 @@ func TestAmounts_IntegerExact(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if got := l.balance(senderOrg, aed); got.Total != 0 {
-		t.Fatalf("sender left with %d, want 0 — the move was not exact", got.Total)
+	if got := l.balance(senderOrg, aed); got.Balance != int64(0) {
+		t.Fatalf("sender left with %d, want 0 — the move was not exact", got.Balance)
 	}
-	if got := l.balance(payoutOrg, aed); got.Total != huge {
-		t.Fatalf("payout bank received %d, want %d", got.Total, huge)
+	if got := l.balance(payoutOrg, aed); got.Balance != int64(huge) {
+		t.Fatalf("payout bank received %d, want %d", got.Balance, huge)
 	}
-	if got := l.balance(payeeRef, inr); got.Total != huge {
-		t.Fatalf("payee received %d, want %d", got.Total, huge)
+	if got := l.balance(payeeRef, inr); got.Balance != int64(huge) {
+		t.Fatalf("payee received %d, want %d", got.Balance, huge)
 	}
 }
 
@@ -452,14 +463,23 @@ func TestAmounts_ZeroLegsRejected(t *testing.T) {
 
 func TestSeedBalance_Overflow_Rejected(t *testing.T) {
 	l := newLedger(t, t0)
-	const max uint64 = 1<<64 - 1
-	if err := l.seed(senderOrg, aed, max); err != nil {
-		t.Fatalf("seed max: %v", err)
+	const maxRepresentable uint64 = 1<<63 - 1 // math.MaxInt64
+
+	// Beyond the signed range the balance subtraction would wrap and report a
+	// nonsense position, so the journal refuses rather than storing it.
+	requireErrContains(t, l.seed(senderOrg, aed, 1<<64-1), "representable range")
+	if got := l.balance(senderOrg, aed).Balance; got != 0 {
+		t.Fatalf("a refused seed credited %d", got)
 	}
-	requireErrContains(t, l.seed(senderOrg, aed, 1), "overflow")
-	if got := l.balance(senderOrg, aed).Total; got != max {
+
+	if err := l.seed(senderOrg, aed, maxRepresentable); err != nil {
+		t.Fatalf("seed at the limit: %v", err)
+	}
+	requireErrContains(t, l.seed(senderOrg, aed, 1), "representable range")
+	if got := l.balance(senderOrg, aed).Balance; got != int64(maxRepresentable) {
 		t.Fatalf("balance wrapped to %d", got)
 	}
+	l.assertBooksBalance()
 }
 
 // ---------------------------------------------------------------------------
@@ -475,8 +495,8 @@ func TestCommit_Twice_Fails(t *testing.T) {
 
 	requireErrContains(t, l.commit(payoutOrg, transferID), "Commit requires PREPARED")
 
-	if got := l.balance(payeeRef, inr); got.Total != payoutLeg {
-		t.Fatalf("payee paid %d after a double Commit, want %d", got.Total, payoutLeg)
+	if got := l.balance(payeeRef, inr); got.Balance != int64(payoutLeg) {
+		t.Fatalf("payee paid %d after a double Commit, want %d", got.Balance, payoutLeg)
 	}
 }
 
@@ -487,7 +507,7 @@ func TestPrepare_Twice_Fails(t *testing.T) {
 	requireErrContains(t, l.prepare(senderOrg, transferID), "Prepare requires ACCEPTED")
 
 	// The second Prepare must not have doubled the lock.
-	if got := l.balance(senderOrg, aed).Locked; got != senderLeg {
+	if got := l.locked(transferID, aed); got != int64(senderLeg) {
 		t.Fatalf("locked = %d after a second Prepare, want %d", got, senderLeg)
 	}
 }
@@ -500,7 +520,7 @@ func TestPrepare_AfterExpiry_Fails(t *testing.T) {
 	l.at(expiresAt + 1)
 	requireErrContains(t, l.prepare(senderOrg, transferID), "expired")
 
-	if got := l.balance(senderOrg, aed).Locked; got != 0 {
+	if got := l.locked(transferID, aed); got != 0 {
 		t.Fatalf("an expired Prepare locked %d", got)
 	}
 }
@@ -536,7 +556,7 @@ func TestGetBalance_UnknownAccount_ReadsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBalance: %v", err)
 	}
-	if b.Total != 0 || b.Locked != 0 {
+	if b.Balance != 0 || b.Debits != 0 || b.Credits != 0 {
 		t.Fatalf("unknown account = %+v, want zeroes", *b)
 	}
 }
@@ -599,11 +619,11 @@ func TestSeedBalance_CreditsOnlyTheCallersOwnAccount(t *testing.T) {
 	if err := l.seed(senderOrg, aed, 500); err != nil {
 		t.Fatalf("SeedBalance: %v", err)
 	}
-	if got := l.balance(senderOrg, aed).Total; got != 500 {
+	if got := l.balance(senderOrg, aed).Balance; got != 500 {
 		t.Fatalf("caller balance = %d, want 500", got)
 	}
 	// There is no argument by which the caller could have credited another org.
-	if got := l.balance(payoutOrg, aed).Total; got != 0 {
+	if got := l.balance(payoutOrg, aed).Balance; got != 0 {
 		t.Fatalf("another org was credited: %d", got)
 	}
 }
@@ -625,8 +645,16 @@ func TestPrepare_TwoTransfersWithinBalance_BothSettle(t *testing.T) {
 	if err := l.prepare(senderOrg, second); err != nil {
 		t.Fatalf("Prepare second: %v", err)
 	}
-	if got := l.balance(senderOrg, aed).Locked; got != 2*senderLeg {
-		t.Fatalf("locked = %d, want %d", got, 2*senderLeg)
+	// Each transfer escrows into its own account, so they do not pool.
+	if got := l.locked(transferID, aed); got != int64(senderLeg) {
+		t.Fatalf("first escrow = %d, want %d", got, senderLeg)
+	}
+	if got := l.locked(second, aed); got != int64(senderLeg) {
+		t.Fatalf("second escrow = %d, want %d", got, senderLeg)
+	}
+	// And the payer is down both.
+	if got := l.balance(senderOrg, aed).Balance; got != int64(1_000_000)-2*int64(senderLeg) {
+		t.Fatalf("sender = %d, want %d", got, int64(1_000_000)-2*int64(senderLeg))
 	}
 
 	if err := l.commit(payoutOrg, transferID); err != nil {
@@ -636,10 +664,16 @@ func TestPrepare_TwoTransfersWithinBalance_BothSettle(t *testing.T) {
 		t.Fatalf("Commit second: %v", err)
 	}
 
-	if got := l.balance(senderOrg, aed); got.Total != 1_000_000-2*senderLeg || got.Locked != 0 {
-		t.Fatalf("sender = %+v", got)
+	if got := l.balance(senderOrg, aed).Balance; got != int64(1_000_000)-2*int64(senderLeg) {
+		t.Fatalf("sender = %d, want %d", got, int64(1_000_000)-2*int64(senderLeg))
 	}
-	if got := l.balance(payeeRef, inr).Total; got != 2*payoutLeg {
+	// Both escrows are empty: the value went to the payee, not back.
+	for _, id := range []string{transferID, second} {
+		if got := l.locked(id, aed); got != 0 {
+			t.Fatalf("escrow for %s still holds %d after settlement", id, got)
+		}
+	}
+	if got := l.balance(payeeRef, inr).Balance; got != 2*int64(payoutLeg) {
 		t.Fatalf("payee = %d, want %d", got, 2*payoutLeg)
 	}
 }

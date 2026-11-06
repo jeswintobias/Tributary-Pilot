@@ -96,6 +96,12 @@ th,td{padding:.4rem .5rem;text-align:left;border-bottom:1px solid var(--rule);wh
 th{font-family:var(--mono);font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:500}
 td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
 td.lock{color:var(--pending)}
+td.neg{color:var(--pending)}
+.acct-escrow{color:var(--pending)}
+.acct-issuance{color:var(--ink-soft)}
+.books{font-family:var(--mono);font-size:.72rem;margin-top:.55rem;padding:.35rem .5rem;border-radius:2px}
+.books.ok{background:var(--verified-soft);color:var(--verified)}
+.books.bad{background:var(--refused-soft);color:var(--refused);font-weight:600}
 tbody tr:last-child td{border-bottom:0}
 
 form{display:flex;flex-direction:column;gap:.55rem}
@@ -175,7 +181,7 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
       </section>
 
       <section class="card">
-        <div class="hd"><h2>Balances</h2><span class="eyebrow">integer minor units</span></div>
+        <div class="hd"><h2>Accounts</h2><span class="eyebrow">double-entry · minor units</span></div>
         <div class="bd" id="balances"><p class="empty">—</p></div>
       </section>
 
@@ -306,16 +312,47 @@ function renderTransfers(transfers) {
   }));
 }
 
-function renderBalances(balances) {
-  if (!balances.length) { $('#balances').innerHTML = '<p class="empty">Nothing on the ledger yet.</p>'; return; }
-  $('#balances').innerHTML = `<table><thead><tr><th>Account</th><th>Ccy</th><th style="text-align:right">Total</th><th style="text-align:right">Locked</th></tr></thead><tbody>
-    ${balances.map((b) => `<tr>
-      <td class="mono" style="font-size:.78rem">${esc(b.account.length > 22 ? b.account.slice(0, 20) + '…' : b.account)}</td>
-      <td class="mono">${esc(b.ccy)}</td>
-      <td class="n">${esc(b.total)}</td>
-      <td class="n ${Number(b.locked) ? 'lock' : ''}">${esc(b.locked)}</td>
-    </tr>`).join('')}
-  </tbody></table>`;
+// Accounts, not balances: value is posted as double-entry movements and these
+// are the fold. issuance:<CCY> carries the negative of everything outstanding;
+// escrow:<transferID> holds a prepared transfer's locked legs. Every currency
+// sums to exactly zero down the Balance column, which is the invariant.
+function accountKind(name) {
+  if (name.startsWith('issuance:')) return 'issuance';
+  if (name.startsWith('escrow:')) return 'escrow';
+  return 'holder';
+}
+
+function renderBalances(accounts) {
+  if (!accounts.length) { $('#balances').innerHTML = '<p class="empty">Nothing on the ledger yet.</p>'; return; }
+
+  const sums = {};
+  for (const a of accounts) sums[a.ccy] = (sums[a.ccy] ?? 0) + Number(a.balance);
+  const balanced = Object.values(sums).every((v) => v === 0);
+
+  const order = { holder: 0, escrow: 1, issuance: 2 };
+  const rows = [...accounts].sort((x, y) =>
+    order[accountKind(x.account)] - order[accountKind(y.account)] || x.account.localeCompare(y.account));
+
+  $('#balances').innerHTML = `<table><thead><tr>
+      <th>Account</th><th>Ccy</th>
+      <th style="text-align:right">Debits</th><th style="text-align:right">Credits</th>
+      <th style="text-align:right">Balance</th>
+    </tr></thead><tbody>
+    ${rows.map((b) => {
+      const kind = accountKind(b.account);
+      const short = b.account.length > 24 ? b.account.slice(0, 22) + '…' : b.account;
+      return `<tr>
+        <td class="mono acct-${kind}" style="font-size:.76rem" title="${esc(b.account)}">${esc(short)}</td>
+        <td class="mono">${esc(b.ccy)}</td>
+        <td class="n">${esc(b.debits)}</td>
+        <td class="n">${esc(b.credits)}</td>
+        <td class="n ${Number(b.balance) < 0 ? 'neg' : ''}">${esc(b.balance)}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table>
+  <p class="books ${balanced ? 'ok' : 'bad'}">${balanced
+      ? 'Books balance — every currency sums to zero'
+      : 'BOOKS DO NOT BALANCE: ' + Object.entries(sums).filter(([, v]) => v !== 0).map(([c, v]) => `${c} ${v}`).join(', ')}</p>`;
 }
 
 async function refresh() {

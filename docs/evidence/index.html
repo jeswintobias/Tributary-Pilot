@@ -243,6 +243,15 @@ footer a { color: var(--accent); }
       illustration of how the system would behave. Re-run the scripts and you get
       these states back.
     </p>
+    <p class="lede" style="border-left:3px solid var(--accent);padding-left:1rem">
+      <b>Superseded in part.</b> This page records a Phase 0 run, when balances were
+      mutable records with a <span class="mono-inline">locked</span> field. Phase B replaced
+      that with a double-entry journal: value is posted as immutable entries, balances are a
+      fold of them, and a lock is a real movement into an <span class="mono-inline">escrow:&lt;transferID&gt;</span>
+      account. The settlement behaviour and every refusal below still hold — the figures are
+      from a real run — but the balance <i>shape</i> has changed. See
+      <a href="../SETTLEMENT_FLOW.md">SETTLEMENT_FLOW.md</a> §8.
+    </p>
     <div class="provenance">
       <div class="prov-cell">
         <span class="prov-k">Run</span>

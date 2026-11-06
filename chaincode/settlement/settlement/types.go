@@ -91,31 +91,8 @@ type Transfer struct {
 	ResolvedAt int64 `json:"resolvedAt"` // set when SETTLED or ABORTED
 }
 
-// Balance is one account's holding in one currency, in integer minor units.
-//
-// The account is an MSP ID for an institution, or an opaque payee reference for
-// a beneficiary. Available funds are Total - Locked, and the invariant
-// 0 <= Locked <= Total holds after every operation.
-//
-// Phase 0 keeps this minimal map inside the settlement contract. Phase 1
-// replaces it with the token and pool contracts; the state machine does not
-// change when it does.
-type Balance struct {
-	Account string `json:"account"`
-	Ccy     string `json:"ccy"`
-	Total   uint64 `json:"total"`
-	Locked  uint64 `json:"locked"`
-}
-
-// Available returns the unlocked portion of the balance.
-func (b Balance) Available() uint64 {
-	if b.Locked > b.Total {
-		// Unreachable while the invariant holds; guard against underflow rather
-		// than wrapping to a huge number if it ever breaks.
-		return 0
-	}
-	return b.Total - b.Locked
-}
+// Balances live in journal.go: value is never written to an account directly,
+// only posted as a double-entry movement and folded into AccountBalance.
 
 // stateChangeEvent is the payload emitted on every state change. Fields are a
 // fixed struct, not a map, so the serialised bytes are identical on every

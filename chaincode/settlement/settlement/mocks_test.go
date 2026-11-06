@@ -253,13 +253,40 @@ func (l *ledger) abort(org, transferID string) error {
 	})
 }
 
-func (l *ledger) balance(account, ccy string) Balance {
+func (l *ledger) balance(account, ccy string) AccountBalance {
 	l.t.Helper()
 	b, err := l.sc.GetBalance(l.as(account), account, ccy)
 	if err != nil {
 		l.t.Fatalf("GetBalance(%s, %s): %v", account, ccy, err)
 	}
 	return *b
+}
+
+// locked is what a transfer currently holds in escrow.
+func (l *ledger) locked(transferID, ccy string) int64 {
+	l.t.Helper()
+	return l.balance(EscrowAccount(transferID), ccy).Balance
+}
+
+// assertBooksBalance folds every account on the ledger. Because each entry
+// applies one amount to both a debit and a credit, every currency must sum to
+// exactly zero — including issuance, which carries the negative of everything
+// outstanding. A non-zero sum means value was created or destroyed.
+func (l *ledger) assertBooksBalance() {
+	l.t.Helper()
+	accounts, err := l.sc.ListBalances(l.as(senderOrg))
+	if err != nil {
+		l.t.Fatalf("ListBalances: %v", err)
+	}
+	perCcy := map[string]int64{}
+	for _, a := range accounts {
+		perCcy[a.Ccy] += a.Balance
+	}
+	for ccy, sum := range perCcy {
+		if sum != 0 {
+			l.t.Fatalf("books do not balance in %s: accounts sum to %d, want 0", ccy, sum)
+		}
+	}
 }
 
 func (l *ledger) transfer(id string) Transfer {

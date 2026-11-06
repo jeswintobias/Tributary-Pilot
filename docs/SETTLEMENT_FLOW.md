@@ -163,7 +163,32 @@ Fabric's semantics exactly — buffered writes, invisible to `GetState`, discard
 when the call returns an error — so this class of bug fails the tests rather than
 hiding behind a too-permissive mock.
 
-## 8. Locks and balances
+## 8. Double entry, and why locks are an account
+
+Balances are never written. Every movement appends one immutable `Entry` naming
+the account value leaves, the account it arrives at, and a single amount that
+applies to both. Per-account totals are a materialised fold of those entries.
+
+The property that buys: **an unbalanced entry cannot be expressed.** Conservation
+is not something a test remembers to assert, it is a consequence of the shape of
+the data. Summed across every account, each currency is always exactly zero.
+
+Two counter-accounts make that true in the awkward cases:
+
+| Account | Holds | Why |
+|---|---|---|
+| `issuance:<CCY>` | The negative of everything outstanding | Money entering the system is a movement too, not an exception. "How much have we issued" is a balance you read, not a number you track |
+| `escrow:<transferID>` | A prepared transfer's locked legs | A lock is a real movement, not a flag. Funds under lock have left the payer, so "available" is just the balance — nothing to subtract and nothing to reconcile |
+
+So `Prepare` posts payer → escrow, `Commit` posts escrow → payee, and `Abort`
+posts escrow → payer. Each is a complete, balanced entry.
+
+One bound worth stating: a balance is the signed difference of two unsigned
+totals, so each side is capped at `MaxInt64`. That is about 92 quadrillion minor
+units. The cap exists so the type cannot silently wrap, not because anyone will
+reach it.
+
+## 9. Locks and balances, as they were
 
 Phase 0 keeps a minimal balance map inside the settlement contract: per org, per
 currency, a `total` and a `locked` amount, both in minor units. Available balance
@@ -178,7 +203,7 @@ The invariant `0 <= locked <= total` holds after every operation. Phase 1 replac
 this map with the `token` and `pool` contracts; the state machine above does not
 change when it does.
 
-## 9. Events
+## 10. Events
 
 `CreateTransfer`, `Accept`, `Prepare`, `Commit` and `Abort` each emit a chaincode event
 carrying the transfer ID, the new state and the leg amounts. Phase 1's event

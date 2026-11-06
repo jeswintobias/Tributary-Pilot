@@ -51,8 +51,9 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 42 unit tests, `cd chaincode/settlement && go test ./...` |
-| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 42 tests passing, 77.6% statement coverage |
+| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 60 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 60 tests passing, 79.7% statement coverage |
+| P1-B | **Double-entry journal** — immutable entries, derived balances | **Done** | Books verified balanced on-chain: AED 0, INR 0 |
 | P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
 | P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
 | P0.4b | Live happy-path and abort-path demo | **Done** | `./network/demo.sh` — settles on-chain; single-org commit refused |

@@ -54,21 +54,30 @@ func TestCommit_SameCurrencyBothLegs_IsExact(t *testing.T) {
 	}
 
 	// Payout org: +4,000,000 from the sender leg, −1,000,000 on the payout leg.
-	if got := l.balance(payoutOrg, inr); got.Total != 10_000_000+senderAmt-payoutAmt || got.Locked != 0 {
-		t.Fatalf("payout bank = %+v, want total %d locked 0", got, 10_000_000+senderAmt-payoutAmt)
+	wantPayout := int64(10_000_000) + int64(senderAmt) - int64(payoutAmt)
+	if got := l.balance(payoutOrg, inr).Balance; got != wantPayout {
+		t.Fatalf("payout bank = %d, want %d", got, wantPayout)
 	}
-	if got := l.balance(senderOrg, inr); got.Total != 10_000_000-senderAmt {
-		t.Fatalf("sender = %+v, want total %d", got, 10_000_000-senderAmt)
+	if got := l.balance(senderOrg, inr).Balance; got != int64(10_000_000)-int64(senderAmt) {
+		t.Fatalf("sender = %d, want %d", got, int64(10_000_000)-int64(senderAmt))
 	}
-	if got := l.balance(payeeRef, inr); got.Total != payoutAmt {
-		t.Fatalf("payee = %+v, want total %d", got, payoutAmt)
+	if got := l.balance(payeeRef, inr).Balance; got != int64(payoutAmt) {
+		t.Fatalf("payee = %d, want %d", got, payoutAmt)
+	}
+	if got := l.locked("SAMECCY", inr); got != 0 {
+		t.Fatalf("escrow still holds %d after settlement", got)
 	}
 
-	// Conservation: nothing created, nothing destroyed.
-	total := l.balance(senderOrg, inr).Total + l.balance(payoutOrg, inr).Total + l.balance(payeeRef, inr).Total
-	if total != 20_000_000 {
-		t.Fatalf("total INR in the system is %d, want 20000000", total)
+	// Conservation, two ways. First the holders: 20,000,000 was issued and all
+	// of it is still somewhere.
+	held := l.balance(senderOrg, inr).Balance +
+		l.balance(payoutOrg, inr).Balance +
+		l.balance(payeeRef, inr).Balance
+	if held != 20_000_000 {
+		t.Fatalf("holders have %d INR between them, want 20000000", held)
 	}
+	// Then the whole ledger, issuance included, which must net to exactly zero.
+	l.assertBooksBalance()
 }
 
 // The sending org alone must not be able to lock the payout org's funds. Before
@@ -81,10 +90,10 @@ func TestPrepare_WithoutAccept_Fails(t *testing.T) {
 	err := l.prepare(senderOrg, transferID)
 	requireErrContains(t, err, "Prepare requires ACCEPTED")
 
-	if got := l.balance(payoutOrg, inr).Locked; got != 0 {
+	if got := l.locked(transferID, inr); got != 0 {
 		t.Fatalf("payout bank funds locked without its consent: %d", got)
 	}
-	if got := l.balance(senderOrg, aed).Locked; got != 0 {
+	if got := l.locked(transferID, aed); got != 0 {
 		t.Fatalf("sender funds locked before acceptance: %d", got)
 	}
 }
@@ -211,13 +220,15 @@ func TestListBalances_ReturnsSeededAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBalances: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("got %d balances, want 2", len(got))
+	// Two holders plus the two issuance counter-accounts they were issued
+	// against: under double entry, money entering the system is a movement too.
+	if len(got) != 4 {
+		t.Fatalf("got %d accounts, want 4 (2 holders + 2 issuance)", len(got))
 	}
 
-	byKey := map[string]uint64{}
+	byKey := map[string]int64{}
 	for _, b := range got {
-		byKey[b.Account+"/"+b.Ccy] = b.Total
+		byKey[b.Account+"/"+b.Ccy] = b.Balance
 	}
 	if byKey[senderOrg+"/"+aed] != 1_000_000 {
 		t.Fatalf("sender AED = %d, want 1000000", byKey[senderOrg+"/"+aed])
@@ -232,9 +243,20 @@ func TestListBalances_ReturnsSeededAccounts(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	got, _ = l.sc.ListBalances(l.as(senderOrg))
-	if len(got) != 4 {
-		t.Fatalf("got %d balances after settlement, want 4 (sender AED, payout AED+INR, payee INR)", len(got))
+	names := map[string]bool{}
+	for _, b := range got {
+		names[b.Account+"/"+b.Ccy] = true
 	}
+	for _, want := range []string{
+		senderOrg + "/" + aed, payoutOrg + "/" + aed,
+		payoutOrg + "/" + inr, payeeRef + "/" + inr,
+		IssuanceAccount(aed) + "/" + aed, IssuanceAccount(inr) + "/" + inr,
+	} {
+		if !names[want] {
+			t.Fatalf("account %s missing from the listing", want)
+		}
+	}
+	l.assertBooksBalance()
 }
 
 // The listing must not leak a transfer the caller is not party to being hidden
@@ -321,7 +343,7 @@ func TestSeedBalance_RejectsMalformedCurrency(t *testing.T) {
 	requireErrContains(t, l.seed(senderOrg, "aed", 100), "must be three capital letters")
 	requireErrContains(t, l.seed(senderOrg, "RUPEES", 100), "must be three letters")
 	requireErrContains(t, l.seed(senderOrg, "", 100), "must be three letters")
-	if got := l.balance(senderOrg, aed).Total; got != 0 {
+	if got := l.balance(senderOrg, aed).Balance; got != 0 {
 		t.Fatalf("a rejected seed credited %d", got)
 	}
 }
