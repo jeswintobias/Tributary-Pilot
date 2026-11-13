@@ -125,6 +125,50 @@ but not yet moved.
    is readable by anyone on the channel. Private data collections would fix it;
    no one has done that work.
 
+## T9 — The projector, the queue and the payout worker
+
+A service layer that reacts to the ledger can fail in ways the ledger cannot.
+The ledger is consistent by construction; a process reading it is not, and the
+interesting threats are about what happens between a block being committed and
+somebody being paid.
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T9.1 | Events that occur while the projector is down are never seen | The event stream is resumed from a stored checkpoint, not from "now". Without `startBlock` the SDK starts at the next block and the gap is silent | `the checkpoint resumes from the last applied block, not the one after`, and the live restart in `demo-pipeline.sh` |
+| T9.2 | A restart re-applies events, double-counting the read model | `applied_events` is keyed by (block, tx, event); a second application is a no-op | `an event applied twice changes the read model once`, `replaying a whole block after a restart loses nothing and duplicates nothing` |
+| T9.3 | A crash between two writes leaves the read model, the checkpoint and the queue disagreeing | All three are one SQLite transaction. There is no dual write to go wrong | `a failure part-way through an event leaves no trace of it at all` |
+| T9.4 | A settled transfer is never paid because the enqueue was lost | The job is written in the same transaction as the settlement it came from, so it exists if and only if the settlement was recorded | `a settled transfer enqueues exactly one payout, however many times it is seen` |
+| T9.5 | A beneficiary is paid twice | Jobs carry a dedupe key derived from the transfer; the payout row is keyed by it; the rail reference is derived rather than generated, so a retry presents the same idempotency key | `a job delivered twice pays once`, `the rail reference is stable across attempts` |
+| T9.6 | A crashed worker holds a job for ever | Jobs are leased with a deadline, not locked. An expired lease is reclaimed | `an abandoned lease is picked up by another worker` |
+| T9.7 | One unpayable transfer blocks every payout behind it | Retries with exponential backoff, then the job is moved to `dead_letters` and leaves the queue | `a poison job does not block the work behind it` |
+| T9.8 | A failed payout is quietly dropped | Dead letters are kept, and the payout is recorded as DEAD rather than absent. A payment that did not happen is a thing to look at | `a job that can never succeed is dead-lettered rather than retried for ever` |
+| T9.9 | An amount above 2^53 is rounded between the ledger and the rail | Payloads are parsed with a reviver that keeps each integer's source text; amounts are stored and compared as text | `an amount beyond 2^53 survives the projection exactly`, `an amount beyond 2^53 reaches the rail exactly as the ledger recorded it` |
+| T9.10 | A stale projection is mistaken for live data | `/api/pipeline` reports the lag in blocks against the ledger's real height, read from `qscc`, and the view states it. Unknown lag is shown as unknown, never as zero | Visible in the corridor view; the live run shows the projection catching up |
+| T9.11 | An unfamiliar event halts the projector for ever | Unknown events advance the checkpoint and are counted as skipped rather than throwing | `an unknown event advances the checkpoint instead of halting the projector` |
+| T9.12 | A late or replayed event drags a settled transfer back to an earlier state | Transfer states are ranked and the read model refuses to move backwards | `the read model never goes backwards` |
+| T9.13 | The gateway corrupts the projection it reads | The gateway opens the store **read-only**; a write from that process is refused by SQLite | Verified: `attempt to write a readonly database` |
+
+### Still open on the pipeline
+
+1. **An event the projector cannot apply stops it.** That is deliberate — a
+   hole in the read model should not be hidden behind every event after it —
+   but it means one malformed event halts projection until someone intervenes.
+   The checkpoint does not move, so the fix is to correct the cause and
+   restart.
+2. **Nothing re-drives a dead letter.** They accumulate for a human to look at.
+   An operator action to requeue one is obvious work and is not built.
+3. **No leader election.** Two projectors against one store would both apply
+   the same events — correctly, thanks to T9.2, but pointlessly. Several
+   workers are fine; that is what leases are for.
+4. **The projection is never verified against the ledger.** Rebuilding it is
+   the recovery path (delete the store, replay from block 0), but nothing
+   periodically checks that the projection still agrees with the chain, which
+   is what would catch a projection bug that only bites on one event shape.
+5. **Backoff is not jittered.** Deterministic so tests are reproducible. With
+   several workers they would retry in lockstep.
+6. **The payout rail is simulated.** Labelled as such everywhere it appears. A
+   real one needs a licensed counterparty.
+
 ## T7 — The service layer
 
 Everything above concerns the chaincode. The gateway in `services/gateway` sits
@@ -168,15 +212,17 @@ still open.
 6. **No per-call audit trail in the service.** The ledger records every
    committed transaction, but the gateway does not correlate its own requests
    to transaction IDs, so a refused call leaves no durable record.
-7. **The read path parses amounts as doubles.** Requests are scrupulous about
-   this — amounts travel as decimal strings and are parsed with `BigInt`,
-   because a `uint64` in minor units exceeds what a double holds exactly. The
-   responses are not: `evaluate` runs `JSON.parse` over the chaincode's reply,
-   so a balance above 2^53 minor units would be rounded before the page ever
-   saw it. Noticed while building the netting view, recorded rather than
-   quietly left. The figures in play are nowhere near that bound, so nothing on
-   screen today is wrong — but the write path's care is undone by the read
-   path, and a JSON reviver keeping those fields as strings is the fix.
+7. **The read path parses amounts as doubles — partly fixed.** Requests are
+   scrupulous about this: amounts travel as decimal strings and are parsed with
+   `BigInt`, because a `uint64` in minor units exceeds what a double holds
+   exactly. The gateway's own passthrough endpoints were undoing it, running
+   `JSON.parse` over the chaincode's reply so that a balance above 2^53 minor
+   units would be rounded before the page saw it.
+   **The projector path no longer does this** — see T9.9 — so anything read
+   through the read model is exact. The gateway's direct-to-peer endpoints
+   (`/api/state`, `/api/netting`, `/api/transfer`) still use `JSON.parse` and
+   still have the gap. The same reviver would close it; the figures in play are
+   nowhere near the bound, so nothing on screen today is wrong.
 
 ### The layers, and which exist
 

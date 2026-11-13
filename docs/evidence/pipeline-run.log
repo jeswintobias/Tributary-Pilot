@@ -1,0 +1,79 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Funding, so the two-phase commit has something to move
+OK: balances seeded
+
+── Settling two transfers on the ledger
+TP-PIPE-OK-1794559454 pays sha256:pipeline-good-1794559454 — the rail will accept this one
+TP-PIPE-DEAD-1794559454 pays sha256:pipeline-closed-account — the rail will reject this one every time
+OK: TP-PIPE-OK-1794559454 is SETTLED on the ledger
+OK: TP-PIPE-DEAD-1794559454 is SETTLED on the ledger
+
+── Running the projector until it catches up
+checkpoint before: block 0
+projector on mychannel/settlement as Org1MSP
+store /Users/jeswintobias/Desktop/Drunix AI Agent Hackthon/Tributary-Pilot/services/projector/data/tributary.db
+resuming from block 0 (0 applied, 0 skipped so far)
+block     8  applied  TransferCaptured     queue 0/0 dead 0
+block     9  applied  TransferAccepted     queue 0/0 dead 0
+block    10  applied  TransferPrepared     queue 0/0 dead 0
+block    11  applied  TransferSettled      queue 1/1 dead 0
+block    12  applied  TransferCaptured     queue 1/1 dead 0
+block    13  applied  TransferAccepted     queue 1/1 dead 0
+block    14  applied  TransferPrepared     queue 1/1 dead 0
+block    15  applied  TransferSettled      queue 2/2 dead 0
+no events for 12000ms; caught up, stopping
+stopped at block 15; 8 applied and 0 skipped this run
+checkpoint after:  block 15
+OK: TP-PIPE-OK-1794559454 is SETTLED in the read model too
+OK: TP-PIPE-DEAD-1794559454 is SETTLED in the read model too
+OK: two payouts queued, one per settled transfer
+
+── Restarting the projector: the replay must change nothing
+events applied before the restart: 8, after: 8
+events re-delivered and skipped on the replay: 3
+OK: the replay applied nothing twice
+OK: still two payouts queued, not four
+
+── Running the payout worker
+payout worker worker-45131
+store /Users/jeswintobias/Desktop/Drunix AI Agent Hackthon/Tributary-Pilot/services/projector/data/tributary.db
+rail: SIMULATED. Nothing here touches a real payment network.
+PAYOUT_FAIL_REFS=sha256:pipeline-closed-account — these will dead-letter
+paid           TP-PIPE-OK-1794559454    ref SIM-INR-TP-PIPE-OK-1794559454  [queue 1/1 dead 0]
+retry          TP-PIPE-DEAD-1794559454  attempt 1, retry in 1000ms: rail rejected sha256:pipeline-closed-account: account closed  [queue 0/1 dead 0]
+retry          TP-PIPE-DEAD-1794559454  attempt 2, retry in 2000ms: rail rejected sha256:pipeline-closed-account: account closed  [queue 0/1 dead 0]
+retry          TP-PIPE-DEAD-1794559454  attempt 3, retry in 4000ms: rail rejected sha256:pipeline-closed-account: account closed  [queue 0/1 dead 0]
+retry          TP-PIPE-DEAD-1794559454  attempt 4, retry in 8000ms: rail rejected sha256:pipeline-closed-account: account closed  [queue 0/1 dead 0]
+dead-lettered  TP-PIPE-DEAD-1794559454  rail rejected sha256:pipeline-closed-account: account closed  [queue 0/0 dead 1]
+
+queue empty for 4000ms; stopping
+
+worker stopped
+OK: TP-PIPE-OK-1794559454 paid, rail reference SIM-INR-TP-PIPE-OK-1794559454
+OK: TP-PIPE-DEAD-1794559454 dead-lettered after 5 attempts, without blocking the other
+OK: the queue is empty: nothing is stuck
+
+── The read model
+store /Users/jeswintobias/Desktop/Drunix AI Agent Hackthon/Tributary-Pilot/services/projector/data/tributary.db
+checkpoint: resume from block 15, 8 applied, 1 skipped
+queue: 0 ready of 0, 0 leased, 1 dead
+
+TRANSFERS (2)
+  TP-PIPE-OK-1794559454      SETTLED   220000 AED -> 3000000 INR  blocks 8-11
+  TP-PIPE-DEAD-1794559454    SETTLED   220000 AED -> 3000000 INR  blocks 12-15
+
+NETTING WINDOWS (0)
+
+OBLIGATIONS: 0
+
+PAYOUTS (2)  — SIMULATED rail
+  TP-PIPE-DEAD-1794559454    DEAD     3000000 INR  rail rejected sha256:pipeline-closed-account: account closed (attempt 5)
+  TP-PIPE-OK-1794559454      PAID     3000000 INR  SIM-INR-TP-PIPE-OK-1794559454 (attempt 1)
+
+DEAD LETTERS (1)
+  payout:TP-PIPE-DEAD-1794559454  after 5 attempts: rail rejected sha256:pipeline-closed-account: account closed
+
+P_EXIT=0

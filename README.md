@@ -66,6 +66,10 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P1 | Corridor view — act as any org, watch the contract refuse | **Done** | `npm start` → http://localhost:7700 |
 | P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 93 tests, `go test ./...` |
 | P1 | Netting view in the corridor UI — live window, compression, settled windows | **Done** | `npm start` → http://localhost:7700 |
+| P1-C | **Event projector** with a checkpoint — a restart replays, it does not lose or duplicate | **Done** | `./network/demo-pipeline.sh` — live restart re-delivered events, applied none twice |
+| P1-C | **Transactional outbox** — read model, checkpoint and queue commit together | **Done** | 27 tests, `cd services/projector && npm test` |
+| P1-C | **Payout worker** with leases, backoff and a dead-letter queue | **Done** | Live: a rejected beneficiary dead-lettered while a healthy payout went through |
+| P1-C | **CQRS read model** served to the UI, with the lag stated | **Done** | `/api/pipeline` — lag in blocks against the ledger's real height from `qscc` |
 | P0.6 | Submission summary + truth pass on this table |  **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
 | P0.2 | `PlatformOrg` as a third organisation on the channel | **Done** | `./network/add-platform-org.sh` — `Org3MSP` is a channel member; **runs no peer**, see note below |
 | — | `PlatformOrg` endorsing peers | **Planned** | Phase 1 — a regulator observer does not endorse |
@@ -206,6 +210,7 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 ./network/add-platform-org.sh        # add PlatformOrg (Org3MSP) to the channel
 ./network/verify-platformorg.sh      # prove T2.1: a non-party org cannot settle
 ./network/demo-netting-multilateral.sh   # three-party netting (needs PlatformOrg)
+./network/demo-pipeline.sh           # projector -> queue -> payout worker, end to end
 ./network/down.sh                    # tear down and clean
 ```
 

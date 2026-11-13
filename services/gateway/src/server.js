@@ -19,10 +19,13 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluate, submit, chaincodeEvents, closeAll, ORGS, CHANNEL, CHAINCODE } from './fabric.js';
+import {
+  evaluate, submit, chaincodeEvents, chainHeight, closeAll, ORGS, CHANNEL, CHAINCODE,
+} from './fabric.js';
 import {
   loadTokens, mspForToken, tokenFromRequest, tokenMap, devTokensAllowed, rateLimit, DEV_MODE,
 } from './auth.js';
+import { pipelineState, projectionAvailable, closeProjection, PROJECTION_DB } from './readmodel.js';
 import {
   validateCreateTransfer, validateSeed, validateTransferId, validateObligation,
   validateWindowSeq, BadRequest, MAX_BODY_BYTES,
@@ -215,6 +218,20 @@ async function handleApi(req, res, url) {
     return json(res, 200, await submit(as, 'CloseWindow', [rawCcy.toUpperCase(), String(seq)]));
   }
 
+  // --- the query side -----------------------------------------------------
+  // Read from the projector's store rather than the peers. The response says
+  // how far behind it is, so nothing here can be mistaken for live.
+  if (req.method === 'GET' && url.pathname === '/api/pipeline') {
+    let ledgerBlock = null;
+    try {
+      // Height is the number of blocks, so the newest block's number is one
+      // less. Best effort: if the peers are unreachable the projection is
+      // still worth showing, with the lag marked unknown rather than invented.
+      ledgerBlock = (await chainHeight(as)) - 1;
+    } catch { /* lag stays null, which the UI renders as unknown */ }
+    return json(res, 200, pipelineState({ ledgerBlock }));
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/transfer') {
     const id = validateTransferId(url.searchParams.get('id'));
     return json(res, 200, await evaluate(as, 'GetTransfer', [id]));
@@ -333,6 +350,11 @@ server.listen(PORT, HOST, () => {
   if (HOST !== '127.0.0.1' && HOST !== '::1') {
     console.warn(`WARNING: bound to ${HOST}, not loopback. There is no TLS here — put a proxy in front.`);
   }
+  if (projectionAvailable()) {
+    console.log(`read model: ${PROJECTION_DB} (read-only)`);
+  } else {
+    console.log('read model: not present — start services/projector to build it');
+  }
   verifyWindowLength().then((check) => {
     if (!check) return;
     if (check.derived === NETTING_WINDOW_SECONDS) {
@@ -348,5 +370,5 @@ server.listen(PORT, HOST, () => {
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => { closeAll(); server.close(() => process.exit(0)); });
+  process.on(signal, () => { closeAll(); closeProjection(); server.close(() => process.exit(0)); });
 }

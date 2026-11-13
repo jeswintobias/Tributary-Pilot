@@ -1,0 +1,22 @@
+{
+  "name": "tributary-projector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Event projector, durable queue and payout worker over the live DRUNIX settlement chaincode",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "projector": "node src/run-projector.js",
+    "worker": "node src/run-worker.js",
+    "test": "node --test",
+    "show": "node src/show.js"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "1.12.6",
+    "@hyperledger/fabric-gateway": "1.7.1"
+  }
+}

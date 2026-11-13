@@ -121,6 +121,22 @@ input,select{font:inherit;font-size:.85rem;padding:.4rem .5rem;border:1px solid 
 .ev .e{display:flex;gap:.5rem;align-items:baseline;font-family:var(--mono);font-size:.74rem;padding:.3rem .45rem;background:var(--code);border-radius:2px}
 .ev .e b{color:var(--accent);font-weight:600}
 .empty{color:var(--ink-soft);font-size:.85rem}
+/* Pipeline */
+.pipe{display:flex;flex-direction:column;gap:.7rem}
+.stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:.4rem}
+.stage{background:var(--code);border-radius:3px;padding:.45rem .55rem;display:flex;flex-direction:column;gap:.1rem;min-width:0}
+.stage .k{font-family:var(--mono);font-size:.6rem;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-soft)}
+.stage .v{font-family:var(--mono);font-size:1rem;font-weight:600}
+.stage.warn .v{color:var(--pending)}
+.stage.bad .v{color:var(--refused)}
+.stage.good .v{color:var(--verified)}
+.lag{font-family:var(--mono);font-size:.72rem;padding:.35rem .5rem;border-radius:2px}
+.lag.ok{background:var(--verified-soft);color:var(--verified)}
+.lag.behind{background:var(--pending-soft);color:var(--pending)}
+.lag.off{background:var(--code);color:var(--ink-soft)}
+.p-PAID{background:var(--verified-soft);color:var(--verified)}
+.p-DEAD{background:var(--refused-soft);color:var(--refused)}
+
 /* Netting */
 .win{display:flex;flex-direction:column;gap:.75rem}
 .win .seqrow{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem;flex-wrap:wrap}
@@ -171,6 +187,14 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
             <button class="primary" type="submit">Sign in</button>
           </form>
         </div>
+      </section>
+
+      <section class="card">
+        <div class="hd">
+          <h2>Settlement pipeline</h2>
+          <span class="eyebrow" id="pipesrc">read model</span>
+        </div>
+        <div class="bd" id="pipeline"><p class="empty">Reading the projection…</p></div>
       </section>
 
       <section class="card">
@@ -573,8 +597,94 @@ $('#obligate').addEventListener('submit', async (e) => {
   } finally { btn.disabled = false; refresh(); }
 });
 
+
+// ---------------------------------------------------------------------------
+// The settlement pipeline
+// ---------------------------------------------------------------------------
+// Everything in this card comes from the projector's store, not from a peer.
+// That is the trade CQRS makes: cheap reads and queries a peer cannot answer,
+// in exchange for being a little behind. The lag is shown rather than hidden,
+// because a dashboard that presents stale figures as live is worse than one
+// that admits the gap.
+
+function renderPipeline(p) {
+  if (!p.available) {
+    $('#pipesrc').textContent = 'not running';
+    $('#pipeline').innerHTML = `<p class="empty">${esc(p.reason)}</p>`;
+    return;
+  }
+  const cp = p.checkpoint;
+  const q = p.queue;
+  const lagKnown = cp.lagBlocks !== null && cp.lagBlocks !== undefined;
+  const caughtUp = lagKnown && cp.lagBlocks <= 0;
+
+  $('#pipesrc').textContent = caughtUp ? 'read model \u00b7 caught up' : 'read model';
+
+  const stage = (k, v, cls = '') => `
+    <div class="stage ${cls}"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`;
+
+  $('#pipeline').innerHTML = `
+    <div class="pipe">
+      <p class="empty" style="margin:0">
+        ledger \u2192 projector \u2192 read model + outbox \u2192 payout worker. Figures below are the
+        projection's, not the ledger's.
+      </p>
+
+      <div class="stages">
+        ${stage('Block', cp.nextBlock)}
+        ${stage('Applied', cp.applied)}
+        ${stage('Queued', q.queued, q.queued > 0 ? 'warn' : '')}
+        ${stage('Leased', q.leased)}
+        ${stage('Paid', p.payouts.filter((x) => x.state === 'PAID').length, 'good')}
+        ${stage('Dead', q.dead, q.dead > 0 ? 'bad' : '')}
+      </div>
+
+      <p class="lag ${caughtUp ? 'ok' : lagKnown ? 'behind' : 'off'}">
+        ${lagKnown
+          ? (caughtUp
+            ? `Caught up with the ledger at block ${esc(cp.nextBlock)}`
+            : `${esc(cp.lagBlocks)} block${cp.lagBlocks === 1 ? '' : 's'} behind the ledger`)
+          : 'Ledger height unknown, so the lag cannot be stated'}
+      </p>
+
+      ${p.payouts.length ? `<table><thead><tr>
+          <th>Payout</th><th>State</th>
+          <th style="text-align:right">Amount</th>
+          <th style="text-align:right">Tries</th><th>Rail ref</th>
+        </tr></thead><tbody>
+        ${p.payouts.slice(0, 8).map((x) => `<tr>
+          <td class="mono" style="font-size:.74rem" title="${esc(x.transfer_id)}">${esc(trim(x.transfer_id, 20))}</td>
+          <td><span class="pill p-${esc(x.state)}">${esc(x.state)}</span></td>
+          <td class="n">${esc(x.amount ?? '')} ${esc(x.ccy ?? '')}</td>
+          <td class="n">${esc(x.attempts)}</td>
+          <td class="mono" style="font-size:.72rem">${esc(trim(x.rail_ref ?? x.last_error ?? '', 28))}</td>
+        </tr>`).join('')}
+        </tbody></table>` : '<p class="empty">No payouts yet. Settle a transfer and the worker will pick it up.</p>'}
+
+      ${q.dead > 0 ? `<p class="books bad">
+        ${esc(q.dead)} payout${q.dead === 1 ? '' : 's'} dead-lettered \u2014 kept, not dropped.
+        A payment that did not happen is somebody's problem to look at.
+      </p>` : ''}
+
+      <p class="empty" style="margin:0;font-size:.76rem">
+        The payout rail is <b>SIMULATED</b>. Nothing here reaches a real payment network.
+      </p>
+    </div>`;
+}
+
+const trim = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}\u2026` : String(s));
+
+async function refreshPipeline() {
+  try {
+    renderPipeline(await api('/api/pipeline'));
+  } catch (err) {
+    $('#pipeline').innerHTML = `<p class="empty">Pipeline unavailable: ${esc(err.message)}</p>`;
+  }
+}
+
 async function refresh() {
   refreshNetting();
+  refreshPipeline();
   try {
     const s = await api('/api/state');
     renderTransfers(s.transfers);

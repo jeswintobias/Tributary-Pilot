@@ -193,9 +193,36 @@ name for the same reason. `TestNetPositions_AreOrderedByAccount` exists because
 removing that sort was not caught by the obvious determinism test — the pairing
 step re-sorts, so the defect hid behind it.
 
+## 10. The service layer, and the read side
+
+The chaincode is the write side and the authority. Around it:
+
+| Process | What it does | Reads from | Writes to |
+|---|---|---|---|
+| `services/gateway` | HTTP API and the corridor view | peers, and the projection | peers |
+| `services/projector` — projector | replays chaincode events from a checkpoint | the Committing Peer | the read model and the outbox |
+| `services/projector` — worker | pays beneficiaries on the far rail | the outbox | payouts, dead letters |
+
+The projector connects to the **Committing Peer**, not the Lite Peer. DRUNIX
+splits the peer in two and only the Committing Peer holds a ledger, so only it
+can replay blocks from a checkpoint — a Lite Peer delivers no events at all.
+That was found by probing both.
+
+Reads split by whether they must be authoritative. Anything that has to be true
+at the instant it is read — a balance before a transfer, a state before an
+action — goes to a peer. Anything that is a view goes to the projection, which
+is cheaper, answers questions no chaincode query can (totals over time), and is
+a little behind. **The lag is reported, not hidden.**
+
+The read model, the checkpoint and the work queue are one SQLite file on
+purpose: an event's three consequences have to commit together or a crash
+between them loses work or does it twice. [PIPELINE.md](PIPELINE.md) sets out
+each failure mode and the test that holds it down.
+
 ## 9. Related documents
 
-- [SETTLEMENT_FLOW.md](SETTLEMENT_FLOW.md) — the 2PC sequence and state machine
+- [SETTLEMENT_FLOW.md](SETTLEMENT_FLOW.md) — the 2PC sequence, the state machine, and netting
+- [PIPELINE.md](PIPELINE.md) — the projector, the queue and the payout worker
 - [THREAT_MODEL.md](THREAT_MODEL.md) — threats mapped to controls and tests
 - [ASSUMPTIONS.md](ASSUMPTIONS.md) — synthetic data, cost and capital-savings models
 - [ROADMAP.md](ROADMAP.md) — Phase 1 order of work

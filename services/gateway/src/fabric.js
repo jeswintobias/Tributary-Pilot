@@ -200,6 +200,37 @@ export async function* chaincodeEvents(mspId = 'Org1MSP', signal) {
   }
 }
 
+/**
+ * The ledger's current height, from the qscc system chaincode.
+ *
+ * Needed so the read model can report how far behind it is in blocks rather
+ * than only in seconds. GetChainInfo answers with a protobuf BlockchainInfo,
+ * not JSON, and pulling in the Fabric protos for one integer is not worth it:
+ * the height is field 1, a varint, so the first bytes are 0x08 followed by it.
+ * That encoding is part of the wire format and will not drift.
+ */
+export async function chainHeight(mspId) {
+  const { gateway } = await contractFor(mspId);
+  const qscc = gateway.getNetwork(CHANNEL).getContract('qscc');
+  const bytes = await qscc.evaluateTransaction('GetChainInfo', CHANNEL);
+  return decodeVarintField1(Buffer.from(bytes));
+}
+
+function decodeVarintField1(buf) {
+  if (buf.length === 0 || buf[0] !== 0x08) {
+    throw new Error('BlockchainInfo did not start with field 1 as expected');
+  }
+  let height = 0n;
+  let shift = 0n;
+  for (let i = 1; i < buf.length; i += 1) {
+    height |= BigInt(buf[i] & 0x7f) << shift;
+    if ((buf[i] & 0x80) === 0) return Number(height);
+    shift += 7n;
+    if (shift > 63n) throw new Error('BlockchainInfo height varint is too long');
+  }
+  throw new Error('BlockchainInfo height varint was truncated');
+}
+
 export function closeAll() {
   for (const map of [connections, eventConnections]) {
     for (const { gateway, client } of map.values()) {
