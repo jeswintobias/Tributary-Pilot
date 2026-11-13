@@ -509,7 +509,7 @@ after Abort — state <span class="ok">"ABORTED"</span>
 
     <div class="figures">
       <div class="figure">
-        <span class="figure-v">94.45%</span>
+        <span class="figure-v">94.44%</span>
         <span class="figure-k">Of gross never moved</span>
         <span class="figure-n">1,800,000 fils obligated across 6 transfers, 100,000 actually settled</span>
       </div>
@@ -540,6 +540,18 @@ after Abort — state <span class="ok">"ABORTED"</span>
       closed once it is in the past, and a submission always lands in the window its own
       timestamp names, so the key range is frozen before anything reads it. Time does the
       locking, so there is nothing to lock.
+    </p>
+
+    <p class="step-note">
+      <strong>Three institutions, not two.</strong> Bilateral netting only cancels what
+      happens to flow both ways. Live, a cycle — Org1 owes Org2, Org2 owes Org3, Org3 owes
+      Org1, all the same amount — settles by writing <em>no balance at all</em>: zero
+      postings, not one. No two of those obligations offset each other, so bilateral
+      netting cannot find it. And in a chain, the intermediary's position nets to zero and
+      it drops out entirely, so value passes from Org1 straight to Org3 — two institutions
+      with no obligation between them. PlatformOrg takes part in both while running no peer
+      of its own: it signs with its own identity and borrows another org's Lite Peer as
+      transport.
     </p>
 
     <p class="step-note">

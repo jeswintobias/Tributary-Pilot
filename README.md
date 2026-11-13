@@ -54,7 +54,8 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 93 unit tests, `cd chaincode/settlement && go test ./...` |
 | P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 93 tests passing, 78.7% statement coverage |
 | P1-B | **Double-entry journal** — immutable entries, derived balances | **Done** | Books verified balanced on-chain: AED 0, INR 0 |
-| P1-B3 | **Netting-first settlement** — obligations touch no shared balance key | **Done** | `./network/demo-netting.sh` — on-chain: 6 obligations, 1,800,000 gross, **100,000 net, one posting, 94.45% compression** |
+| P1-B3 | **Netting-first settlement** — obligations touch no shared balance key | **Done** | `./network/demo-netting.sh` — on-chain: 6 obligations, 1,800,000 gross, **100,000 net, one posting, 94.44% compression** |
+| P1-B3 | **Multilateral netting** across three institutions | **Done** | `./network/demo-netting-multilateral.sh` — a three-way cycle settles with **zero postings**; a chain settles with one, the intermediary never written |
 | P1-B3 | Netting concurrency claim measured, not asserted | **Done** | Tests compare real read/write sets; live run checks each simultaneous cross-org pair committed |
 | P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
 | P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
@@ -201,14 +202,21 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 ./network/up.sh                      # bring up the network and create the channel
 ./network/deploy-cc.sh settlement    # package, install, approve and commit
 ./network/demo.sh                    # happy path + abort path, printing resulting states
+./network/demo-netting.sh            # netting: 6 obligations settle as one posting
 ./network/add-platform-org.sh        # add PlatformOrg (Org3MSP) to the channel
 ./network/verify-platformorg.sh      # prove T2.1: a non-party org cannot settle
+./network/demo-netting-multilateral.sh   # three-party netting (needs PlatformOrg)
 ./network/down.sh                    # tear down and clean
 ```
 
 First run clones upstream and builds eight Go binaries, so give it time. On
 Apple silicon everything after that is emulated and slow. `demo.sh` expects a
 fresh network — balances accumulate across runs.
+
+The two netting scripts do not need a fresh network: they settle any window an
+earlier run left open, then derive every figure they check from the
+obligations the chain actually recorded, so a dirty ledger changes the numbers
+but not whether they tie out.
 
 ### Corridor view — the UI over the live ledger
 

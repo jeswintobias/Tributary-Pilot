@@ -38,8 +38,10 @@ transaction timestamp so that not even a window pointer is shared, and a window
 may only be closed once it is in the past — which is what makes the closing
 range query immune to phantom reads, since no transaction can write into a
 window its own timestamp does not name. On the live network six obligations
-worth 1,800,000 fils gross settled as a single posting of 100,000, a 94.45%
-compression, with every account's balance moving by exactly its net position.
+worth 1,800,000 fils gross settled as a single posting of 100,000, a 94.44%
+compression, with every account's balance moving by exactly its net position;
+and across three institutions a cycle of debts cancelled so completely that the
+window settled by writing no balance at all.
 
 Money is held in integer minor units throughout, with no floating-point amount
 anywhere in the contract and no personally identifying information on the

@@ -338,6 +338,45 @@ refactor, and it is on the roadmap rather than quietly assumed here.
   why both exist. High-value payment-versus-payment belongs on 2PC; the retail
   corridor belongs on netting.
 
+### Multilateral, not bilateral
+
+Two institutions netting against each other can only cancel what happens to
+flow both ways. The cases worth having three parties for are the ones
+bilateral netting cannot see at all, and both run live in
+`network/demo-netting-multilateral.sh`:
+
+**A cycle.** Org1 owes Org2, Org2 owes Org3, Org3 owes Org1, all the same
+amount. Every position nets to zero, so the window settles by moving nothing
+whatsoever — zero postings, not one. No two of those three obligations offset
+each other, so no amount of bilateral netting finds this.
+
+**A chain.** Org1 owes Org2 and Org2 owes Org3 the same amount. Org2's position
+is zero, so it drops out of the pairing entirely and its balance is never
+written. The window settles as a single movement from Org1 straight to Org3 —
+two institutions that have no obligation between them.
+
+PlatformOrg takes part in both while running no peer of its own. It signs with
+its own admin identity and addresses another organisation's Lite Peer, so the
+chaincode reads `Org3MSP` from the signature while the endorsement policy is
+satisfied by the two organisations that do run peers. Being a party to a
+settlement and running infrastructure for it are separate things.
+
+### The compression figure is floored, and it is not computed the obvious way
+
+`compressionBps` reports the share of the gross that never had to move, in
+integer basis points. Two decisions in four lines of arithmetic:
+
+It is **floored, never rounded**. The alternative overstates the saving, which
+is the one direction a savings metric must not err in.
+
+It is computed with `bits.Mul64` and `bits.Div64` rather than as
+`10000 - net*10000/gross`. Both figures are `uint64` and the journal permits
+them up to `MaxInt64`, so the naive multiplication overflows once the gross
+passes roughly 1.8e15 minor units and the reported compression becomes
+nonsense — silently, on the one number this whole path exists to produce. The
+128-bit intermediate is exact for every input the ledger can hold.
+`TestCompressionBps` fails on the naive formula at two of its cases.
+
 ### Double entry does not catch a wrong net
 
 Worth stating because it is easy to assume otherwise. Doubling both sides of a

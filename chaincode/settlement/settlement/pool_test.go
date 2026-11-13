@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
@@ -102,9 +103,11 @@ func TestNetting_CompressesGrossFlowToTheResidue(t *testing.T) {
 	if w.NetValue != 100_000 {
 		t.Errorf("NetValue = %d, want 100000", w.NetValue)
 	}
-	// 1 - 100000/900000, in basis points.
-	if w.CompressionBps != 8889 {
-		t.Errorf("CompressionBps = %d, want 8889", w.CompressionBps)
+	// 1 - 100000/900000 is 88.888...%, and the figure is floored rather than
+	// rounded: a savings metric that rounds up overstates the saving, which is
+	// the one direction it must never err in.
+	if w.CompressionBps != 8888 {
+		t.Errorf("CompressionBps = %d, want 8888", w.CompressionBps)
 	}
 
 	// The claim that matters for throughput: the shared balance keys are
@@ -775,4 +778,51 @@ func TestNetting_EveryAccountMovesByExactlyItsNetPosition(t *testing.T) {
 			w.Postings, w.Obligations)
 	}
 	l.assertBooksBalance()
+}
+
+// compressionBps is the number this contract exists to produce, and the
+// obvious way to compute it overflows.
+func TestCompressionBps(t *testing.T) {
+	cases := []struct {
+		name       string
+		gross, net uint64
+		want       int64
+	}{
+		{"everything cancelled", 1_000_000, 0, 10000},
+		{"nothing cancelled", 1_000_000, 1_000_000, 0},
+		{"the live corridor figure", 1_800_000, 100_000, 9444},
+		{"floored, never rounded up", 900_000, 100_000, 8888},
+		{"an empty window", 0, 0, 0},
+		// net > gross cannot happen — the net is a subset of the gross — but a
+		// metric that returned a negative percentage would be worse than one
+		// that refuses.
+		{"net somehow exceeds gross", 100, 500, 0},
+		// The reason this function exists. net*10000 overflows uint64 above
+		// about 1.8e15, and the naive expression reports nonsense from there on
+		// — silently, on the headline number.
+		{"a gross that would overflow the naive formula", math.MaxInt64, math.MaxInt64 / 2, 5000},
+		{"the largest representable window", math.MaxInt64, 0, 10000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := compressionBps(tc.gross, tc.net); got != tc.want {
+				t.Errorf("compressionBps(%d, %d) = %d, want %d", tc.gross, tc.net, got, tc.want)
+			}
+		})
+	}
+}
+
+// The naive expression and the exact one must agree everywhere the naive one
+// is still valid, so that fixing the overflow did not change the figure for
+// any window anyone will actually settle.
+func TestCompressionBps_MatchesTheNaiveFormulaBelowOverflow(t *testing.T) {
+	for _, gross := range []uint64{1, 7, 1000, 999_983, 1_800_000, 1 << 40} {
+		for _, frac := range []uint64{0, 1, 3, 7, 10} {
+			net := gross * frac / 10
+			naive := int64((gross - net) * 10000 / gross)
+			if got := compressionBps(gross, net); got != naive {
+				t.Errorf("compressionBps(%d, %d) = %d, naive gives %d", gross, net, got, naive)
+			}
+		}
+	}
 }

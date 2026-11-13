@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"sort"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
@@ -388,10 +389,7 @@ func (s *SmartContract) CloseWindow(
 	}
 	w.NetValue = net
 	w.Postings = len(postings)
-	if gross > 0 {
-		// Integer basis points, computed so the division happens last.
-		w.CompressionBps = int64(10000 - (net*10000)/gross)
-	}
+	w.CompressionBps = compressionBps(gross, net)
 
 	raw, err := json.Marshal(w)
 	if err != nil {
@@ -588,9 +586,7 @@ func (s *SmartContract) GetWindow(
 		}
 	}
 	w.Postings = len(postings)
-	if w.GrossValue > 0 {
-		w.CompressionBps = int64(10000 - (w.NetValue*10000)/w.GrossValue)
-	}
+	w.CompressionBps = compressionBps(w.GrossValue, w.NetValue)
 	return &w, nil
 }
 
@@ -669,6 +665,28 @@ func (s *SmartContract) ListObligations(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// compressionBps is the share of the gross that never had to move, in integer
+// basis points: 10000 means everything cancelled, 0 means nothing did.
+//
+// The obvious expression, 10000 - net*10000/gross, is wrong for large windows.
+// Both figures are uint64 and the journal allows them up to MaxInt64, so the
+// multiplication overflows once the gross passes about 9.2e14 minor units and
+// the reported compression becomes nonsense — on the one metric this contract
+// exists to produce.
+//
+// bits.Mul64 keeps the intermediate product in 128 bits and bits.Div64 divides
+// it back down, which is exact for every input the ledger can hold. Div64
+// panics if the high word is not less than the divisor; it always is here,
+// because diff <= gross makes the quotient at most 10000.
+func compressionBps(gross, net uint64) int64 {
+	if gross == 0 || net >= gross {
+		return 0
+	}
+	hi, lo := bits.Mul64(gross-net, 10000)
+	q, _ := bits.Div64(hi, lo, gross)
+	return int64(q)
+}
 
 // windowSeq maps a transaction timestamp to a window number. Integer division,
 // so every peer that sees the same proposal timestamp lands in the same window

@@ -1,0 +1,79 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Confirming PlatformOrg can transact while running no peer of its own
+OK: PlatformOrg read the ledger as Org3MSP; current window 29909278
+
+── Funding all three institutions in AED
+Org1MSP AED 308550000
+Org2MSP AED 260950000
+Org3MSP AED 60500000
+
+── Settling any window an earlier run left open
+cleared 0 leftover window(s)
+
+── Scenario 1 — a cycle of three debts that cancels completely
+sleeping 41s to the next window boundary
+window 29909280: Org1 owes Org2 600000, Org2 owes Org3 600000, Org3 owes Org1 600000
+  Org3MSP    -> Org1MSP        600000
+  Org2MSP    -> Org3MSP        600000
+  Org1MSP    -> Org2MSP        600000
+OK: all three institutions committed into one window, from one block
+{
+    "ccy": "AED",
+    "seq": 29909280,
+    "state": "SETTLED",
+    "obligations": 3,
+    "grossValue": 1800000,
+    "netValue": 0,
+    "postings": 0,
+    "compressionBps": 10000,
+    "openedAt": 1794556800,
+    "closedAt": 1794556860,
+    "closedBy": "Org1MSP"
+}
+OK: net 0: the cycle cancelled completely
+OK: 0 postings: no balance key was written at all
+OK: compression 10000 bps — 100% of 1800000 never moved
+OK: every balance is exactly where it started
+
+Bilateral netting cannot find this. No two of those three obligations
+offset each other — the cancellation only exists across all three.
+
+── Scenario 2 — value passes through an institution that never moves
+sleeping 52s to the next window boundary
+window 29909282: Org1 owes Org2 500000, Org2 owes Org3 500000
+{
+    "ccy": "AED",
+    "seq": 29909282,
+    "state": "SETTLED",
+    "obligations": 2,
+    "grossValue": 1000000,
+    "netValue": 500000,
+    "postings": 1,
+    "compressionBps": 5000,
+    "openedAt": 1794556920,
+    "closedAt": 1794556984,
+    "closedBy": "Org1MSP"
+}
+OK: one posting settles a two-hop chain
+Org1MSP 308550000 -> 308050000  (moved -500000)
+Org2MSP 260950000 -> 260950000  (moved 0)
+Org3MSP 60500000 -> 61000000  (moved 500000)
+OK: Org2MSP netted to zero and was never written — value passed straight through it
+OK: Org1MSP paid 500000
+OK: Org3MSP received 500000, from an institution it has no obligation with
+
+── Conservation across every account on the ledger
+  Org1MSP                        AED  dr=1950000        cr=310000000      bal=     308050000
+  issuance:AED                   AED  dr=630000000      cr=0              bal=    -630000000
+  Org2MSP                        AED  dr=0              cr=260950000      bal=     260950000
+  Org3MSP                        AED  dr=0              cr=61000000       bal=      61000000
+  AED sums to 0   BALANCED
+
+── Summary
+cycle:  1800000 obligated across 3 institutions, 0 settled, 0 postings
+chain:  1000000 obligated across 2 obligations, 500000 settled, 1 posting
+
+M_EXIT=0
