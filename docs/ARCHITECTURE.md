@@ -103,9 +103,9 @@ chaincode.
 
 | Contract | Channel | Responsibility | Phase |
 |---|---|---|---|
-| `settlement` | `mychannel` | Capture → accept → prepare → commit over both legs; per-org balances in integer minor units | **0 — implemented** |
+| `settlement` | `mychannel` | Capture → accept → prepare → commit over both legs; a double-entry journal underneath; **and the netting path** | **0 — implemented** |
 | `token` | `mychannel` | MIST-aligned Issue / Manage / Settle / Transact; role-restricted mint and burn | 1 |
-| `pool` | `mychannel` | Member deposits and withdrawals; netting windows computing multilateral net positions | 1 |
+| `pool` | `mychannel` | Member deposits and withdrawals. The netting half is **built, inside `settlement`**; deposits and withdrawals are not | 1 (part built) |
 | `policy` | `mychannel` | Limits, approved members, maker-checker; every agent action passes through it | 1 |
 | `attestation` | `mychannel` | KYC / sanctions attestations as salted hashes with issuer and expiry | 1 |
 | `payout` | `mychannel` | Purpose-bound vouchers, splits, deadline with automatic refund | 1 |
@@ -113,6 +113,22 @@ chaincode.
 In Phase 1 the foreign side is represented as a **second channel** and a coordinator
 service runs NPCI's cross-chain two-phase commit between them. That is labelled
 "NPCI Interop/Coordinator pattern — simulated" wherever it appears.
+
+### Two settlement paths, deliberately
+
+`settlement` carries two ways to move value, and the choice between them is an
+economic one rather than a matter of taste.
+
+| | Two-phase commit | Netting |
+|---|---|---|
+| Finality | per transfer, immediate | at the window close |
+| Writes to shared balance keys | 2 per transfer | at most 1 per account per window |
+| Concurrency | serialises on the payer's key | institutions submit in parallel |
+| Suits | high-value payment-versus-payment | the retail corridor, where flow cancels |
+
+Both write through the same journal, so the books balance across the two
+together. §11 of [SETTLEMENT_FLOW.md](SETTLEMENT_FLOW.md) sets out why the
+hot-key problem makes the second one necessary and what it costs.
 
 ## 6. Data flow — the running example
 
@@ -167,6 +183,15 @@ Chaincode must produce identical output on every endorsing peer. The settlement
 contract therefore uses `stub.GetTxTimestamp()` rather than wall-clock time, no
 randomness, no map iteration in any output, and makes no external calls. These are
 checked in review and exercised by the unit tests.
+
+Netting raises the stakes on the map-iteration rule. Folding obligations into
+net positions is naturally a map operation, and Go randomises map iteration
+order, so emitting positions in that order would give each endorsing peer a
+different write set and every netted transaction would fail validation. The
+fold sorts by account name before emitting anything, and pairing breaks ties by
+name for the same reason. `TestNetPositions_AreOrderedByAccount` exists because
+removing that sort was not caught by the obvious determinism test — the pairing
+step re-sorts, so the defect hid behind it.
 
 ## 9. Related documents
 

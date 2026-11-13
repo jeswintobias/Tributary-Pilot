@@ -86,7 +86,44 @@ should have.
 | T6.4 | A test mock is more permissive than Fabric, so a real defect passes CI | The mock stub reproduces Fabric's transaction semantics: writes are buffered and invisible to `GetState` within the same transaction, and discarded entirely when the call returns an error | `TestFailedCall_WritesNothing`; T1.8 and T1.9 were both found this way |
 | T6.1 | Endorsing peers disagree because chaincode is non-deterministic | No wall-clock time, no randomness, no map iteration in outputs, no external calls. Timestamps come from `stub.GetTxTimestamp()` | Review rule; divergence would surface as MVCC/validation failure on the live network |
 | T6.2 | A modified upstream dependency is shipped without anyone noticing | Upstream DRUNIX is never vendored or modified. `network/` only wraps its scripts, and the commit we tested against is recorded | `network/README.md` records the exact upstream commit |
-| T6.3 | Concurrent transfers on the same balance key silently overwrite each other | DRUNIX's Committing Peer runs MVCC validation; the losing transaction is marked invalid and must be resubmitted | **Planned** — concurrency test on the live network |
+| T6.3 | Concurrent transfers on the same balance key silently overwrite each other | DRUNIX's Committing Peer runs MVCC validation; the losing transaction is marked invalid and must be resubmitted. The netting path (T8) removes the shared key from the hot path rather than relying on retries | `TestNetting_TwoInstitutionsSubmitWithoutContending` compares actual read and write sets; a throughput measurement under concurrent load is still **planned** |
+
+## T8 — The netting path
+
+Netting records obligations that move no value until a window closes, which
+creates a class of threat the two-phase commit does not have: value promised
+but not yet moved.
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T8.1 | An institution promises the same funds twice, on the netting path and again through `Prepare` | Exposure is subtracted from a balance before **any** debit is allowed, on either path. A reservation is not a bookkeeping note; the journal enforces it | `TestExposure_BlocksTheTwoPhaseCommitFromSpendingCommittedFunds` |
+| T8.2 | An institution commits its whole balance, waits for the window to roll, and commits it again | Exposure spans windows. It is keyed `expo:<ccy>:<account>` with no sequence number, so a past-but-unsettled window still counts against cover | `TestSubmitObligation_CoverCountsUnsettledWindowsTogether` |
+| T8.3 | An obligation is submitted naming another institution as the debtor | The debtor is the signing MSP, read from the signature. There is no debtor argument, in the chaincode or in the gateway | `TestSubmitObligation_AttributesTheDebtToTheSigner` |
+| T8.4 | A window is closed twice, settling the same obligations again | The window record is the idempotency key, as the transfer record is on the 2PC path. A second close is refused | `TestCloseWindow_RejectsAReplay`, and the live run |
+| T8.5 | A window is closed while still accruing, so a phantom obligation is inserted into the range the close is reading | A window may only be closed once `seq` is strictly in the past, and a submission lands in the window its own timestamp names. The range is immutable before it is read | `TestCloseWindow_RefusesAWindowThatIsStillOpen`, and the live run |
+| T8.6 | Endorsing peers compute different net positions, so every netted transaction fails validation | The fold sorts by account name and pairing breaks ties by name. Nothing reaches a write set in map order | `TestNetting_IsDeterministicWhateverTheObligationOrder`, `TestNetPositions_AreOrderedByAccount` |
+| T8.7 | Whoever closes a window chooses a netting favourable to themselves | Netting is a pure function of state that is already frozen, so every caller computes byte-identical results. Any member may close; there is no privileged closer to compromise | `TestCloseWindow_AnyMemberClosesToTheSameResult` |
+| T8.8 | A creditor names a reserved counter-account and is credited from the issuance liability | `issuance:` and `escrow:` prefixes are refused as creditors, as they are as payees | `TestSubmitObligation_Guards` |
+| T8.9 | Netting settles the wrong figure while the books still balance | Double entry does **not** catch this — confirmed by injecting a doubled posting, which kept conservation intact. The invariant that catches it is that every account moves by exactly its net position | `TestNetting_EveryAccountMovesByExactlyItsNetPosition`, and the live run derives the expected net from committed obligations |
+
+### Still open on the netting path
+
+1. **Cover is gross, not net.** An institution must hold the full outgoing
+   amount while a window is open, even if it nets to nothing. Netting
+   compresses the value that *moves*, not the collateral held. Fixing it needs
+   bilateral credit limits, which is a counterparty-risk decision rather than a
+   refactor.
+2. **One institution's submissions serialise on its own exposure record.**
+   Parallelism is across institutions, not within one. Sharding that key is a
+   contained change and is not pretended to be done.
+3. **Nothing guarantees a window gets closed.** Any member *may* close one, but
+   no member *must*. An unclosed window holds its participants' reservations
+   indefinitely. A scheduled closer belongs in the Phase C service layer, and
+   until it exists this is an operational dependency, not a protocol guarantee.
+4. **A window's compression is visible to every channel member.** Obligations
+   name both parties and amounts in the clear, so the corridor's bilateral flow
+   is readable by anyone on the channel. Private data collections would fix it;
+   no one has done that work.
 
 ## T7 — The service layer
 
@@ -131,6 +168,15 @@ still open.
 6. **No per-call audit trail in the service.** The ledger records every
    committed transaction, but the gateway does not correlate its own requests
    to transaction IDs, so a refused call leaves no durable record.
+7. **The read path parses amounts as doubles.** Requests are scrupulous about
+   this — amounts travel as decimal strings and are parsed with `BigInt`,
+   because a `uint64` in minor units exceeds what a double holds exactly. The
+   responses are not: `evaluate` runs `JSON.parse` over the chaincode's reply,
+   so a balance above 2^53 minor units would be rounded before the page ever
+   saw it. Noticed while building the netting view, recorded rather than
+   quietly left. The figures in play are nowhere near that bound, so nothing on
+   screen today is wrong — but the write path's care is undone by the read
+   path, and a JSON reviver keeping those fields as strings is the fix.
 
 ### The layers, and which exist
 

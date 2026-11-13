@@ -24,7 +24,8 @@ import {
   loadTokens, mspForToken, tokenFromRequest, tokenMap, devTokensAllowed, rateLimit, DEV_MODE,
 } from './auth.js';
 import {
-  validateCreateTransfer, validateSeed, validateTransferId, BadRequest, MAX_BODY_BYTES,
+  validateCreateTransfer, validateSeed, validateTransferId, validateObligation,
+  validateWindowSeq, BadRequest, MAX_BODY_BYTES,
 } from './validate.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,16 @@ const PORT = Number(process.env.PORT ?? 7700);
 // Loopback by default. Binding anywhere else is a deliberate act, and the
 // startup banner says so out loud.
 const HOST = process.env.GATEWAY_HOST ?? '127.0.0.1';
+
+// Must match NettingWindowSeconds in chaincode/settlement/settlement/pool.go.
+// Duplicated constants drift, so this one is checked against the ledger at
+// startup rather than trusted — see verifyWindowLength below.
+const NETTING_WINDOW_SECONDS = 60;
+
+// How many past windows the view scans for one still awaiting settlement.
+// Bounded because each is a query: far enough back to catch a stalled run,
+// not so far that the page costs a hundred round trips.
+const NETTING_CLOSE_LOOKBACK = 30;
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -129,6 +140,81 @@ async function handleApi(req, res, url) {
     return json(res, 200, { as, transfers: transfers ?? [], balances: balances ?? [] });
   }
 
+  // --- netting ------------------------------------------------------------
+  // The corridor view needs three things to show netting honestly: which
+  // window is accruing now, what it would settle to if it closed, and what the
+  // windows that already closed actually did. All three come off the ledger.
+  if (req.method === 'GET' && url.pathname === '/api/netting') {
+    const ccy = (url.searchParams.get('ccy') ?? 'AED').toUpperCase();
+    const seq = Number(await evaluate(as, 'CurrentWindow'));
+    const [current, settled] = await Promise.all([
+      evaluate(as, 'GetWindow', [ccy, String(seq)]),
+      evaluate(as, 'ListWindows'),
+    ]);
+
+    // Find the OLDEST past window still carrying obligations, not merely the
+    // one before this. Offering only the previous window strands anything
+    // older: nobody has to close a window, so a run that stops halfway leaves
+    // obligations — and the reservations backing them — with no route to
+    // settlement through this page. The operator should always be pointed at
+    // the oldest outstanding one.
+    const lookback = Math.min(seq, NETTING_CLOSE_LOOKBACK);
+    const past = await Promise.all(
+      Array.from({ length: lookback }, (_, i) => seq - lookback + i)
+        .map((s) => evaluate(as, 'GetWindow', [ccy, String(s)]).catch(() => null)),
+    );
+    const closable = past.find((w) => w && w.state === 'OPEN' && Number(w.obligations) > 0)
+      ?? past.find((w) => w && w.state === 'OPEN')
+      ?? null;
+    const pending = past.filter((w) => w && w.state === 'OPEN' && Number(w.obligations) > 0).length;
+    const exposures = await Promise.all(
+      Object.keys(ORGS).map(async (mspId) => ({
+        mspId,
+        ...(await evaluate(as, 'GetExposure', [mspId, ccy])),
+      })),
+    );
+    return json(res, 200, {
+      ccy,
+      currentSeq: seq,
+      windowSeconds: NETTING_WINDOW_SECONDS,
+      current,
+      closable,
+      pending,
+      lookback,
+      settled: (settled ?? []).filter((w) => w.ccy === ccy),
+      exposures,
+    });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/obligations') {
+    const ccy = (url.searchParams.get('ccy') ?? 'AED').toUpperCase();
+    const seq = validateWindowSeq(url.searchParams.get('seq'));
+    return json(res, 200, {
+      ccy, seq,
+      obligations: (await evaluate(as, 'ListObligations', [ccy, String(seq)])) ?? [],
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/obligations') {
+    const b = validateObligation(await readBody(req));
+    // The debtor is the signing organisation, decided by the token. There is no
+    // field for it here and there must not be.
+    return json(res, 200, await submit(as, 'SubmitObligation', [
+      b.obligationID, b.creditor, b.ccy, b.amount,
+    ]));
+  }
+
+  // /api/windows/<CCY>/<seq>/close
+  const closeWindow = /^\/api\/windows\/([A-Za-z]{3})\/([0-9]{1,20})\/close$/.exec(url.pathname);
+  if (req.method === 'POST' && closeWindow) {
+    const [, rawCcy, rawSeq] = closeWindow;
+    const seq = validateWindowSeq(rawSeq);
+    await readBody(req);
+    // Any member may close a window: the netting is a pure function of state
+    // that is already frozen, so there is no privileged closer to authorise.
+    return json(res, 200, await submit(as, 'CloseWindow', [rawCcy.toUpperCase(), String(seq)]));
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/transfer') {
     const id = validateTransferId(url.searchParams.get('id'));
     return json(res, 200, await evaluate(as, 'GetTransfer', [id]));
@@ -220,6 +306,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// The chaincode derives its window number as txTime / NettingWindowSeconds and
+// exposes the result, so the window length can be recovered from the chain
+// instead of assumed. If this service's copy of the constant is wrong, every
+// window number it shows would be wrong too — and silently.
+async function verifyWindowLength() {
+  const anyOrg = Object.keys(ORGS)[0];
+  const seq = Number(await evaluate(anyOrg, 'CurrentWindow'));
+  if (!Number.isFinite(seq) || seq <= 0) return null;
+  // seq = floor(now / W), and at epoch scale that pins W to a single integer.
+  const derived = Math.round(Math.floor(Date.now() / 1000) / seq);
+  return { seq, derived };
+}
+
 const { source, generated } = await loadTokens(Object.keys(ORGS));
 
 server.listen(PORT, HOST, () => {
@@ -234,6 +333,18 @@ server.listen(PORT, HOST, () => {
   if (HOST !== '127.0.0.1' && HOST !== '::1') {
     console.warn(`WARNING: bound to ${HOST}, not loopback. There is no TLS here — put a proxy in front.`);
   }
+  verifyWindowLength().then((check) => {
+    if (!check) return;
+    if (check.derived === NETTING_WINDOW_SECONDS) {
+      console.log(`netting: ${NETTING_WINDOW_SECONDS}s windows confirmed against the ledger (window ${check.seq})`);
+    } else {
+      console.warn(
+        `WARNING: this service assumes ${NETTING_WINDOW_SECONDS}s netting windows, but the `
+        + `ledger's window ${check.seq} implies ${check.derived}s. Window numbers shown here will be wrong.`);
+    }
+  }).catch((err) => {
+    console.warn(`netting: could not confirm the window length against the ledger (${describeError(err)})`);
+  });
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

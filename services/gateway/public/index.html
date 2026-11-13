@@ -56,6 +56,11 @@ main .wrap{padding-block:1.3rem;display:grid;grid-template-columns:minmax(0,2fr)
 .card{background:var(--surface);border:1px solid var(--rule);border-radius:4px;min-width:0}
 .card>.hd{padding:.75rem 1rem;border-bottom:1px solid var(--rule);display:flex;align-items:center;justify-content:space-between;gap:.6rem}
 .card>.bd{padding:1rem;display:flex;flex-direction:column;gap:.8rem;min-width:0}
+/* Tables here hold tabular numbers that must not wrap, so a wide one scrolls
+   inside its card instead of pushing the whole page sideways. The settled-windows
+   table has six columns and did exactly that before this rule. */
+.card>.bd{overflow-x:auto}
+.card>.bd>table{min-width:100%}
 
 /* Sticky: a refusal that scrolls out of view is a refusal nobody reads, and the
    refusal is the whole point of switching identity. */
@@ -116,6 +121,25 @@ input,select{font:inherit;font-size:.85rem;padding:.4rem .5rem;border:1px solid 
 .ev .e{display:flex;gap:.5rem;align-items:baseline;font-family:var(--mono);font-size:.74rem;padding:.3rem .45rem;background:var(--code);border-radius:2px}
 .ev .e b{color:var(--accent);font-weight:600}
 .empty{color:var(--ink-soft);font-size:.85rem}
+/* Netting */
+.win{display:flex;flex-direction:column;gap:.75rem}
+.win .seqrow{display:flex;align-items:baseline;justify-content:space-between;gap:.5rem;flex-wrap:wrap}
+.win .seq{font-family:var(--mono);font-size:1.05rem;font-weight:600}
+.roll{height:4px;background:var(--code);border-radius:2px;overflow:hidden}
+.roll i{display:block;height:100%;background:var(--accent);transition:width 1s linear}
+.bars{display:flex;flex-direction:column;gap:.45rem}
+.bar{display:grid;grid-template-columns:4.2rem 1fr auto;align-items:center;gap:.5rem}
+.bar .lbl{font-family:var(--mono);font-size:.64rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
+.bar .track{height:15px;background:var(--code);border-radius:2px;overflow:hidden}
+.bar .track i{display:block;height:100%;border-radius:2px;transition:width .4s ease}
+.bar.gross .track i{background:var(--rule)}
+.bar.net .track i{background:var(--accent)}
+.bar .val{font-family:var(--mono);font-size:.78rem;font-variant-numeric:tabular-nums}
+.saved{font-family:var(--mono);font-size:.72rem;padding:.4rem .55rem;border-radius:2px;background:var(--verified-soft);color:var(--verified)}
+.saved b{font-size:.95rem}
+.expo{display:flex;flex-wrap:wrap;gap:.4rem}
+.expo span{font-family:var(--mono);font-size:.7rem;padding:.2rem .45rem;border-radius:2px;background:var(--code);color:var(--ink-soft)}
+.expo span.live{background:var(--pending-soft);color:var(--pending)}
 footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-top:1px solid var(--rule);margin-top:1rem}
 </style>
 </head>
@@ -153,6 +177,19 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
         <div class="hd"><h2>Transfers</h2><span class="eyebrow" id="tfcount">—</span></div>
         <div class="bd" id="transfers"><p class="empty">Reading the ledger…</p></div>
       </section>
+
+      <section class="card">
+        <div class="hd">
+          <h2>Netting window</h2>
+          <span class="eyebrow" id="winccy">AED</span>
+        </div>
+        <div class="bd" id="netting"><p class="empty">Reading the ledger…</p></div>
+      </section>
+
+      <section class="card">
+        <div class="hd"><h2>Settled windows</h2><span class="eyebrow">what actually moved</span></div>
+        <div class="bd" id="windows"><p class="empty">—</p></div>
+      </section>
     </div>
 
     <div class="col">
@@ -176,6 +213,25 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
               <label>Expires in (s, max 900)<input name="expiresIn" class="mono" inputmode="numeric" value="900" required></label>
             </div>
             <button class="primary" type="submit">Capture transfer</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="hd"><h2>Submit obligation</h2><button class="ghost" id="fillOb" type="button">Fill</button></div>
+        <div class="bd">
+          <p class="empty" style="margin:0 0 .6rem">
+            Netting path. This writes no balance and takes no lock — it records a claim that is
+            offset against every other claim in the window. Only the residue moves.
+          </p>
+          <form id="obligate">
+            <label>Obligation ID<input name="obligationID" required></label>
+            <label>Creditor<select name="creditor" id="obCreditor"></select></label>
+            <div class="row2">
+              <label>Amount (minor)<input name="amount" class="mono" inputmode="numeric" required></label>
+              <label>Ccy<input name="ccy" value="AED" required></label>
+            </div>
+            <button class="primary" type="submit">Submit obligation</button>
           </form>
         </div>
       </section>
@@ -254,9 +310,13 @@ function renderIdents() {
     const org = state.orgs.find((o) => o.mspId === state.as);
     if (org?.readOnly) banner('ok', `Acting as ${org.label}. It can read everything and change nothing — try an action.`);
   }));
-  $('#payoutOrg').innerHTML = state.orgs
+  const counterparties = state.orgs
     .filter((o) => !o.readOnly && o.mspId !== state.as)
     .map((o) => `<option value="${o.mspId}">${esc(o.label)} (${o.mspId})</option>`).join('');
+  $('#payoutOrg').innerHTML = counterparties;
+  // An obligation's debtor is the signing organisation, so only the creditor is
+  // chosen here \u2014 and never the signer itself.
+  $('#obCreditor').innerHTML = counterparties;
 }
 
 // Which calls the state machine allows next. Identity is NOT filtered here on
@@ -267,7 +327,7 @@ const NEXT = { CAPTURED: ['Accept', 'Abort'], ACCEPTED: ['Prepare', 'Abort'], PR
 function renderTransfers(transfers) {
   $('#tfcount').textContent = `${transfers.length} on the ledger`;
   if (!transfers.length) {
-    $('#transfers').innerHTML = '<p class="empty">No transfers yet. Capture one on the right.</p>';
+    $('#transfers').innerHTML = '<p class="empty">No transfers yet. Capture one using the form.</p>';
     return;
   }
   $('#transfers').innerHTML = [...transfers].reverse().map((t) => `
@@ -355,7 +415,166 @@ function renderBalances(accounts) {
       : 'BOOKS DO NOT BALANCE: ' + Object.entries(sums).filter(([, v]) => v !== 0).map(([c, v]) => `${c} ${v}`).join(', ')}</p>`;
 }
 
+
+// ---------------------------------------------------------------------------
+// Netting
+// ---------------------------------------------------------------------------
+// The claim this panel has to earn: a transfer on the two-phase commit path
+// writes the payer's balance, so transfers serialise on that key. An obligation
+// writes no balance at all, and a whole window settles with one movement per
+// net position. The figures below are read off the ledger, so the compression
+// shown is the compression the chain performed.
+let nettingState = null;
+
+const bps = (v) => (Number(v) / 100).toFixed(2);
+
+function renderNetting(n) {
+  nettingState = n;
+  $('#winccy').textContent = `${n.ccy} \u00b7 ${n.windowSeconds}s windows`;
+
+  const cur = n.current ?? { obligations: 0, grossValue: '0', netValue: '0', postings: 0, compressionBps: 0 };
+  const gross = Number(cur.grossValue ?? 0);
+  const net = Number(cur.netValue ?? 0);
+  const scale = Math.max(gross, 1);
+
+  // Seconds until the window rolls. Derived from the window length the server
+  // confirmed against the chaincode, not from a guess.
+  const elapsed = Math.floor(Date.now() / 1000) % n.windowSeconds;
+  const pct = Math.round((elapsed / n.windowSeconds) * 100);
+
+  // The oldest past window still awaiting settlement, which is not always the
+  // one just before this. Nobody is obliged to close a window, so older ones
+  // accumulate and their reservations stay held until someone does.
+  const closable = n.closable;
+  const closableHas = closable && Number(closable.obligations) > 0;
+
+  const exposures = (n.exposures ?? []).filter((e) => Number(e.outstanding) > 0);
+
+  $('#netting').innerHTML = `
+    <div class="win">
+      <div class="seqrow">
+        <span class="seq">Window ${esc(cur.seq ?? n.currentSeq)}</span>
+        <span class="eyebrow">accruing \u00b7 rolls in <span id="rollIn">${n.windowSeconds - elapsed}</span>s</span>
+      </div>
+      <div class="roll"><i id="rollBar" style="width:${pct}%"></i></div>
+
+      <div class="bars">
+        <div class="bar gross">
+          <span class="lbl">Gross</span>
+          <span class="track"><i style="width:${gross > 0 ? 100 : 0}%"></i></span>
+          <span class="val">${esc(cur.grossValue ?? 0)}</span>
+        </div>
+        <div class="bar net">
+          <span class="lbl">Net</span>
+          <span class="track"><i style="width:${Math.round((net / scale) * 100)}%"></i></span>
+          <span class="val">${esc(cur.netValue ?? 0)}</span>
+        </div>
+      </div>
+
+      ${gross > 0 ? `<p class="saved">
+        <b>${bps(cur.compressionBps)}%</b> of the gross never has to move \u00b7
+        ${esc(cur.obligations)} obligations settle in ${esc(cur.postings)}
+        posting${Number(cur.postings) === 1 ? '' : 's'}, against ${Number(cur.obligations) * 2} on the unnetted path
+      </p>` : '<p class="empty">No obligations in this window yet. Submit one using the form.</p>'}
+
+      ${exposures.length ? `<div class="expo">${exposures.map((e) =>
+        `<span class="live" title="committed to unsettled windows">${esc(e.mspId)} reserved ${esc(e.outstanding)} ${esc(n.ccy)}</span>`).join('')}</div>` : ''}
+
+      <div class="acts">
+        ${closable
+          ? `<button type="button" id="closeWin" data-seq="${esc(closable.seq)}" data-ccy="${esc(n.ccy)}">
+               Close window ${esc(closable.seq)}${closableHas ? ` \u00b7 ${esc(closable.obligations)} obligations, net ${esc(closable.netValue)}` : ' (empty)'}
+             </button>`
+          : '<span class="empty">Every past window is settled. This one can be closed once it is in the past.</span>'}
+        ${Number(n.pending) > 1
+          ? `<span class="empty">${esc(n.pending)} past windows are still awaiting settlement, oldest first.</span>`
+          : ''}
+      </div>
+    </div>`;
+
+  const btn = $('#closeWin');
+  if (btn) btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const out = await api(`/api/windows/${btn.dataset.ccy}/${btn.dataset.seq}/close`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      });
+      banner('ok', `Window ${btn.dataset.seq} settled`, `tx ${out.transactionId}`);
+    } catch (err) {
+      banner('err', 'Close refused by the chaincode', err.message);
+    } finally { btn.disabled = false; refresh(); }
+  });
+
+  renderWindows(n.settled ?? []);
+}
+
+function renderWindows(windows) {
+  if (!windows.length) {
+    $('#windows').innerHTML = '<p class="empty">No window has settled yet.</p>';
+    return;
+  }
+  const rows = [...windows].sort((a, b) => Number(b.seq) - Number(a.seq)).slice(0, 12);
+  const totalGross = windows.reduce((t, w) => t + Number(w.grossValue), 0);
+  const totalNet = windows.reduce((t, w) => t + Number(w.netValue), 0);
+  const totalObs = windows.reduce((t, w) => t + Number(w.obligations), 0);
+  const totalPostings = windows.reduce((t, w) => t + Number(w.postings), 0);
+
+  $('#windows').innerHTML = `<table><thead><tr>
+      <th>Window</th>
+      <th style="text-align:right">Obligations</th>
+      <th style="text-align:right">Gross</th>
+      <th style="text-align:right">Net</th>
+      <th style="text-align:right">Postings</th>
+      <th style="text-align:right">Saved</th>
+    </tr></thead><tbody>
+    ${rows.map((w) => `<tr>
+      <td class="mono" style="font-size:.76rem">${esc(w.seq)}</td>
+      <td class="n">${esc(w.obligations)}</td>
+      <td class="n">${esc(w.grossValue)}</td>
+      <td class="n">${esc(w.netValue)}</td>
+      <td class="n">${esc(w.postings)}</td>
+      <td class="n" style="color:var(--verified)">${bps(w.compressionBps)}%</td>
+    </tr>`).join('')}
+    </tbody></table>
+    <p class="books ok">Across ${windows.length} settled window${windows.length === 1 ? '' : 's'}:
+      ${totalObs} obligations settled in ${totalPostings} posting${totalPostings === 1 ? '' : 's'}
+      \u00b7 ${totalGross} obligated, ${totalNet} moved</p>`;
+}
+
+async function refreshNetting() {
+  try {
+    renderNetting(await api('/api/netting'));
+  } catch (err) {
+    $('#netting').innerHTML = `<p class="empty">Netting unavailable: ${esc(err.message)}</p>`;
+  }
+}
+
+$('#fillOb').addEventListener('click', () => {
+  const f = $('#obligate');
+  f.obligationID.value = `OB-${Math.floor(Date.now() / 1000)}-${Math.random().toString(36).slice(2, 6)}`;
+  f.amount.value = '250000';
+  f.ccy.value = 'AED';
+});
+
+$('#obligate').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  const body = Object.fromEntries(new FormData(e.target).entries());
+  try {
+    const out = await api('/api/obligations', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    banner('ok', 'Obligation recorded \u2014 no balance written, no lock taken', `tx ${out.transactionId}`);
+    e.target.reset();
+    $('#obligate').ccy.value = body.ccy;
+  } catch (err) {
+    banner('err', 'Obligation refused by the chaincode', err.message);
+  } finally { btn.disabled = false; refresh(); }
+});
+
 async function refresh() {
+  refreshNetting();
   try {
     const s = await api('/api/state');
     renderTransfers(s.transfers);
@@ -413,6 +632,23 @@ $('#seed').addEventListener('submit', async (e) => {
     banner('err', 'Seed refused by the chaincode', err.message);
   } finally { btn.disabled = false; refresh(); }
 });
+
+// The countdown has to keep moving between polls, or it would sit at a stale
+// number and imply the window had stalled. It updates only the two elements
+// that change: re-rendering the whole card every second would replace the
+// close button under the cursor of anyone about to press it, which it did
+// before this was written this way.
+setInterval(() => {
+  if (!nettingState) return;
+  const secs = nettingState.windowSeconds;
+  const elapsed = Math.floor(Date.now() / 1000) % secs;
+  const left = $('#rollIn');
+  const bar = $('#rollBar');
+  if (left) left.textContent = String(secs - elapsed);
+  if (bar) bar.style.width = `${Math.round((elapsed / secs) * 100)}%`;
+  // The window has rolled, so the figures behind it are stale too.
+  if (elapsed < 1) refreshNetting();
+}, 1000);
 
 function streamEvents() {
   const src = new EventSource(`/api/events?token=${encodeURIComponent(state.tokens[state.as])}`);

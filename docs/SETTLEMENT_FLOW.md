@@ -1,4 +1,4 @@
-# Settlement flow — two-phase commit
+# Settlement flow — two-phase commit, and netting
 
 > Status: Phase 0. The state machine, the guards and the endorsement requirement
 > described here are implemented in `chaincode/settlement` and covered by unit
@@ -208,3 +208,146 @@ change when it does.
 `CreateTransfer`, `Accept`, `Prepare`, `Commit` and `Abort` each emit a chaincode event
 carrying the transfer ID, the new state and the leg amounts. Phase 1's event
 listener drives the payout adapter and the treasury dashboard from these.
+
+## 11. The netting path, and why 2PC alone does not scale
+
+The two-phase commit above is atomic, and it serialises.
+
+Every transfer on that path reads and writes the payer's balance key. Two
+transfers from one institution in the same block both read the same version of
+that key, and the second is thrown out at validation with
+`MVCC_READ_CONFLICT`. A shared liquidity pool makes it worse: every transfer in
+the corridor touches the pool's key, so the corridor settles at roughly one
+transfer per block.
+
+**Adding peers does not help.** The conflict is on the key, not on the CPU. This
+is the single most common reason a blockchain settlement demo quotes a
+throughput figure it cannot reproduce under concurrent load.
+
+### What a transfer touches instead
+
+Submitting an obligation writes exactly two keys:
+
+| Key | Who writes it | Contends with |
+|---|---|---|
+| `oblig:<ccy>:<seq>:<obligationID>` | whoever submits | nothing — the ID is unique |
+| `expo:<ccy>:<account>` | that account only | that account's own submissions |
+
+Neither is shared between institutions, so two banks submit in parallel at full
+speed. Writes to the shared balance keys drop from two per transfer to at most
+one per participating account per window — a bound that does not grow with
+volume.
+
+`TestNetting_TwoInstitutionsSubmitWithoutContending` checks this by taking both
+transactions' actual read and write sets and showing neither writes anything
+the other touched, which is precisely the condition Fabric's MVCC check
+arbitrates. It is not asserted in prose; it is measured.
+
+### The window number is arithmetic, not state
+
+The obvious design keeps a "current window" pointer in state. That pointer
+would be read by every submission and written whenever the window rolled —
+recreating exactly the hot key it was meant to remove.
+
+Instead:
+
+```
+seq = txTime / NettingWindowSeconds
+```
+
+Every endorsing peer sees the same proposal timestamp and computes the same
+window, with no read, no write and no coordination. The window number is a
+function of time, not a piece of state.
+
+### Why closing a window is safe
+
+`CloseWindow` ranges over a window's obligations, and §7 explains why a range
+query inside a writing transaction is normally dangerous: Fabric records the
+range in the read set, and another transaction inserting a key into it
+invalidates the close. That is a phantom read.
+
+Here it cannot happen. A window may only be closed once `seq` is strictly in
+the past, and a submission always lands in the window its own timestamp names.
+**No transaction can ever write into a past window's key range**, so the range
+is immutable before the close reads it. Time does the locking, so there is
+nothing to lock.
+
+### Netting, and what gets posted
+
+Obligations fold into one signed position per account. Because every obligation
+contributes `+amount` to one account and `-amount` to another, the positions
+always sum to zero. Debtors are then matched against creditors largest-first;
+each step closes out at least one side, so the number of postings is at most
+`debtors + creditors - 1` against two per obligation unnetted.
+
+An institution whose position nets to zero drops out entirely — its balance is
+never written. In a three-party chain where A owes B and B owes C the same
+amount, the whole window settles as one movement from A to C, and B is not
+touched.
+
+The fold sorts by account name before emitting anything. Go randomises map
+iteration order, so a fold that leaked map order would give each endorsing peer
+a different write set and every netted transaction would fail validation.
+
+### Exposure, and why the two paths cannot double-spend
+
+An obligation moves nothing, so something has to stop an institution promising
+the same money twice. `expo:<ccy>:<account>` records what it has committed to
+windows that have not settled, and the journal subtracts that from a balance
+before allowing **any** debit — netting or two-phase commit. Without it, an
+institution could commit its whole balance to a window and then lock the same
+funds through `Prepare`, with both paths believing they had cover.
+
+Exposure deliberately spans windows. An institution that could ignore a past
+but unclosed window would be able to commit the same funds again simply by
+waiting for the window to roll.
+
+**Order matters at close.** The reservation is released *before* the net is
+posted, not after. The journal refuses a debit that eats into a reservation,
+and a window's own gross is part of that reservation until released — so
+posting first would have the close blocked by the very obligations it was
+settling. An institution that had committed its whole balance would deadlock on
+a net of almost nothing. Releasing first is safe in the other direction too:
+submission already established `balance >= exposure`, and `net <= gross`, so
+after the release the available balance is at least `gross`, which is at least
+the net about to be debited.
+
+### What this does and does not save
+
+It compresses **the value that moves at settlement**. It does not reduce the
+collateral an institution must hold while a window is open, because cover is
+checked against gross outgoing rather than the net. The net is not known until
+the window closes, and its incoming side lives on other institutions' keys —
+which a submission must not read if it is to stay conflict-free.
+
+Freeing that collateral needs bilateral credit limits, so cover becomes
+`gross_out - agreed_line`. That is a counterparty-risk decision, not a
+refactor, and it is on the roadmap rather than quietly assumed here.
+
+### Honest limits
+
+- **Parallelism is across institutions, not within one.** Two obligations from
+  the same bank contend on its exposure record.
+  `TestNetting_OneInstitutionSerialisesOnItsOwnExposure` pins that down rather
+  than letting it pass unnoticed. The fix is to shard the exposure record,
+  which changes one key's shape and nothing else.
+- **Issuance is still a shared key.** Minting is not on the hot path here, but
+  it would need sharding before it was.
+- **Netting defers finality to the window.** A party that needs settlement
+  finality on an individual transfer uses the two-phase commit path, which is
+  why both exist. High-value payment-versus-payment belongs on 2PC; the retail
+  corridor belongs on netting.
+
+### Double entry does not catch a wrong net
+
+Worth stating because it is easy to assume otherwise. Doubling both sides of a
+posting leaves the books perfectly balanced while settling the wrong figure —
+the conservation check from §8 sails straight past it. This was confirmed by
+injecting exactly that fault.
+
+The invariant that does catch it is that **every account must move by exactly
+its net position in the window**, and that is
+`TestNetting_EveryAccountMovesByExactlyItsNetPosition`. The live run checks the
+same thing against committed state, deriving the expected net from the
+obligations the chain actually recorded rather than from what the script
+intended to submit.

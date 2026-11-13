@@ -496,7 +496,68 @@ after Abort — state <span class="ok">"ABORTED"</span>
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <span class="eyebrow">Claim 04 — modelled, on synthetic data</span>
+      <span class="eyebrow">Claim 04 — measured on the ledger</span>
+      <h2>Netting, so the shared balance stops being a hot key</h2>
+      <p>
+        The two-phase commit above is atomic and it serialises: every transfer writes the
+        payer's balance key, so concurrent transfers collide on MVCC and adding peers does
+        not help — the contention is on the key, not the CPU. An obligation writes no
+        balance at all. These figures come from
+        <code>./network/demo-netting.sh</code> against the live network.
+      </p>
+    </div>
+
+    <div class="figures">
+      <div class="figure">
+        <span class="figure-v">94.45%</span>
+        <span class="figure-k">Of gross never moved</span>
+        <span class="figure-n">1,800,000 fils obligated across 6 transfers, 100,000 actually settled</span>
+      </div>
+      <div class="figure">
+        <span class="figure-v">1</span>
+        <span class="figure-k">Posting, not 12</span>
+        <span class="figure-n">Six obligations settled in one journal movement; the unnetted path writes two per transfer</span>
+      </div>
+      <div class="figure">
+        <span class="figure-v">3 / 3</span>
+        <span class="figure-k">Simultaneous pairs committed</span>
+        <span class="figure-n">Each round submitted one obligation per institution at the same moment; none was invalidated</span>
+      </div>
+    </div>
+
+    <p class="step-note">
+      Every account moved by exactly its net position — Org1MSP by −100,000 and Org2MSP by
+      +100,000 — and the script derives those expected positions from the obligations the
+      chain actually recorded, not from what it intended to submit. That check matters more
+      than it looks: double entry does <strong>not</strong> catch a wrong net. Doubling both
+      sides of a posting leaves the books perfectly balanced while settling the wrong
+      figure, which was confirmed by injecting exactly that fault.
+    </p>
+
+    <p class="step-note">
+      The live run also refused to close a window that was still accruing. That guard is
+      what makes the closing range query immune to phantom reads: a window may only be
+      closed once it is in the past, and a submission always lands in the window its own
+      timestamp names, so the key range is frozen before anything reads it. Time does the
+      locking, so there is nothing to lock.
+    </p>
+
+    <p class="step-note">
+      <strong>What this does not show.</strong> It compresses the value that
+      <em>moves</em>, not the collateral held while a window is open — cover is checked
+      against gross outgoing, and freeing collateral needs bilateral credit limits that do
+      not exist here. Parallelism is across institutions, not within one: two obligations
+      from the same bank contend on its exposure record and one is invalidated. That was
+      observed on this network before it was written down, when four submissions fired
+      back to back left exactly one survivor. No throughput figure is claimed.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Claim 05 — modelled, on synthetic data</span>
       <h2>Pooling and netting, at matched risk</h2>
       <p>
         These come from the forecasting notebook, not from the ledger. The data is

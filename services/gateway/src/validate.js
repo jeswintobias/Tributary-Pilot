@@ -76,6 +76,27 @@ export function validateCreateTransfer(body) {
   };
 }
 
+export function validateObligation(body) {
+  return {
+    obligationID: id('obligationID', body.obligationID),
+    creditor: id('creditor', body.creditor),
+    ccy: ccy('ccy', body.ccy),
+    amount: amount('amount', body.amount),
+  };
+}
+
+// A window sequence is a whole number derived from a transaction timestamp
+// divided by the netting window length, so it is bounded by the clock rather
+// than by anything a caller chooses. It still has to be checked: it reaches the
+// ledger as a key attribute.
+export function validateWindowSeq(value) {
+  const v = str(value).trim();
+  if (!DIGITS.test(v)) throw new BadRequest('seq must be a whole window number');
+  const seq = Number(v);
+  if (!Number.isSafeInteger(seq) || seq < 0) throw new BadRequest('seq is out of range');
+  return seq;
+}
+
 export function validateSeed(body) {
   return { ccy: ccy('ccy', body.ccy), amount: amount('amount', body.amount) };
 }

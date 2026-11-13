@@ -31,6 +31,24 @@ require_tools
 ensure_upstream
 export_fabric_env
 
+cd "${TEST_NETWORK_DIR}"
+
+# Upstream's helper scripts are not written for `set -u` — envVar.sh reads
+# OVERRIDE_ORG unconditionally — so unset-variable checking is dropped for the
+# rest of this script. Error propagation (`set -e -o pipefail`) stays on.
+set +u
+# shellcheck disable=SC1091
+source ./scripts/envVar.sh
+
+ORDERER_CA="${TEST_NETWORK_DIR}/organizations/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem"
+PEER0_ORG1_CA="${TEST_NETWORK_DIR}/organizations/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
+PEER0_ORG2_CA="${TEST_NETWORK_DIR}/organizations/peerOrganizations/org2.example.com/tlsca/tlsca.org2.example.com-cert.pem"
+
+BOTH_PEERS=(
+  --peerAddresses localhost:7051 --tlsRootCertFiles "${PEER0_ORG1_CA}"
+  --peerAddresses localhost:9051 --tlsRootCertFiles "${PEER0_ORG2_CA}"
+)
+
 LITE_PEER=0
 COMMIT_WAIT="${COMMIT_WAIT:-8}"
 
@@ -84,7 +102,13 @@ ok "window length confirmed at ${WINDOW_SECONDS}s"
 # ---------------------------------------------------------------------------
 step "Funding both institutions in ${CCY} (Phase 0 scaffolding)"
 # ---------------------------------------------------------------------------
-invoke_fast 1 "{\"Args\":[\"SeedBalance\",\"${CCY}\",\"50000000\"]}"
+# Both seeds debit issuance:<CCY>, which is one shared key — so firing them
+# back to back puts both in the same block and MVCC invalidates the second.
+# That is the hot-key problem this whole script is about, and it bit the setup
+# before it bit the demo. Seeding is not on the hot path, so the fix here is
+# simply to let the first commit before the second is sent. On the hot path the
+# fix is netting, which is the point.
+invoke 1 "{\"Args\":[\"SeedBalance\",\"${CCY}\",\"50000000\"]}"
 invoke 2 "{\"Args\":[\"SeedBalance\",\"${CCY}\",\"50000000\"]}"
 
 ORG1_BEFORE="$(query_raw 1 "{\"Args\":[\"GetBalance\",\"Org1MSP\",\"${CCY}\"]}" \
@@ -93,6 +117,60 @@ ORG2_BEFORE="$(query_raw 1 "{\"Args\":[\"GetBalance\",\"Org2MSP\",\"${CCY}\"]}" 
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["balance"])')"
 echo "Org1MSP ${CCY} ${ORG1_BEFORE}"
 echo "Org2MSP ${CCY} ${ORG2_BEFORE}"
+# Cover is checked at submission, so an institution with nothing cannot take
+# part. Say so here rather than letting it surface as a confusing refusal.
+for pair in "Org1MSP:${ORG1_BEFORE}" "Org2MSP:${ORG2_BEFORE}"; do
+  if [ "${pair##*:}" -le 0 ]; then
+    fail "${pair%%:*} has no ${CCY} to commit — its seed did not commit"
+    echo "N_EXIT=${N_EXIT}"
+    exit 1
+  fi
+done
+
+# ---------------------------------------------------------------------------
+step "Settling any window an earlier run left open"
+# ---------------------------------------------------------------------------
+# An unclosed window keeps holding its participants' reservations, so a second
+# run would start with liquidity committed to obligations nobody ever settled.
+# Clearing them makes this script rerunnable, and it is also the honest shape of
+# the problem: any member MAY close a window, but no member MUST. A scheduled
+# closer belongs in the service layer, and until it exists this is an
+# operational dependency rather than a protocol guarantee.
+NOW_SEQ="$(query_raw 1 '{"Args":["CurrentWindow"]}' | tr -d '"')"
+LEFTOVERS=0
+for back in $(seq 1 20); do
+  past=$(( NOW_SEQ - back ))
+  [ "${past}" -lt 0 ] && break
+  info="$(query_raw 1 "{\"Args\":[\"GetWindow\",\"${CCY}\",\"${past}\"]}" 2>/dev/null || true)"
+  [ -z "${info}" ] && continue
+  read -r wstate wobs <<<"$(echo "${info}" | python3 -c '
+import sys, json
+try:
+    w = json.load(sys.stdin)
+    print(w["state"], w["obligations"])
+except Exception:
+    print("UNKNOWN 0")
+')"
+  if [ "${wstate}" = "OPEN" ] && [ "${wobs}" -gt 0 ]; then
+    echo "window ${past} was left open with ${wobs} obligations; settling it"
+    invoke_fast 1 "{\"Args\":[\"CloseWindow\",\"${CCY}\",\"${past}\"]}" >/dev/null 2>&1 || true
+    LEFTOVERS=$(( LEFTOVERS + 1 ))
+  fi
+done
+if [ "${LEFTOVERS}" -gt 0 ]; then
+  sleep "${COMMIT_WAIT}"
+  ok "settled ${LEFTOVERS} window(s) left over from an earlier run"
+else
+  echo "no windows left open"
+fi
+
+# Re-read the balances: settling leftovers moves value, and every figure this
+# script checks has to be measured after that, not before.
+ORG1_BEFORE="$(query_raw 1 "{\"Args\":[\"GetBalance\",\"Org1MSP\",\"${CCY}\"]}" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["balance"])')"
+ORG2_BEFORE="$(query_raw 1 "{\"Args\":[\"GetBalance\",\"Org2MSP\",\"${CCY}\"]}" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["balance"])')"
+echo "starting balances: Org1MSP ${ORG1_BEFORE}, Org2MSP ${ORG2_BEFORE}"
 
 # ---------------------------------------------------------------------------
 step "Waiting for a fresh netting window so every obligation lands in one"
@@ -108,15 +186,37 @@ ok "submitting into window ${SEQ}"
 # ---------------------------------------------------------------------------
 step "Submitting obligations in both directions, touching no shared balance"
 # ---------------------------------------------------------------------------
-# Four payments out and two back: gross 1,800,000 fils, of which only the
-# residue should ever move.
-invoke_fast 1 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-A\",\"Org2MSP\",\"${CCY}\",\"400000\"]}"
-invoke_fast 1 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-B\",\"Org2MSP\",\"${CCY}\",\"300000\"]}"
-invoke_fast 1 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-C\",\"Org2MSP\",\"${CCY}\",\"250000\"]}"
-invoke_fast 1 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-D\",\"Org2MSP\",\"${CCY}\",\"150000\"]}"
-invoke_fast 2 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-E\",\"Org1MSP\",\"${CCY}\",\"500000\"]}"
-invoke_fast 2 "{\"Args\":[\"SubmitObligation\",\"OB-${STAMP}-F\",\"Org1MSP\",\"${CCY}\",\"200000\"]}"
-sleep "${COMMIT_WAIT}"
+# Submitted in rounds of two: one from each institution, fired together.
+#
+# The pairing is the demonstration, and the shape of it is forced by the design
+# rather than chosen for convenience. Two institutions write disjoint keys, so
+# both commit from the same block — that is the concurrency the netting path
+# buys. Two obligations from the SAME institution both write that institution's
+# exposure record, so MVCC keeps one and invalidates the other, and they have to
+# be spaced out.
+#
+# That limit is real and it is documented: parallelism is across institutions,
+# not within one. It was observed here before it was written down — an earlier
+# run fired four obligations from one org back to back and exactly one survived.
+# Sharding the exposure key is the fix and it is not done.
+ROUNDS=(
+  "400000 500000"
+  "300000 200000"
+  "250000 150000"
+)
+declare -a EXPECT_IDS=()
+round_no=0
+for round in "${ROUNDS[@]}"; do
+  read -r out_amt in_amt <<<"${round}"
+  id_out="OB-${STAMP}-O${round_no}"
+  id_in="OB-${STAMP}-I${round_no}"
+  echo "round ${round_no}: Org1MSP owes ${out_amt}, Org2MSP owes ${in_amt} — submitted together"
+  invoke_fast 1 "{\"Args\":[\"SubmitObligation\",\"${id_out}\",\"Org2MSP\",\"${CCY}\",\"${out_amt}\"]}" >/dev/null
+  invoke_fast 2 "{\"Args\":[\"SubmitObligation\",\"${id_in}\",\"Org1MSP\",\"${CCY}\",\"${in_amt}\"]}" >/dev/null
+  EXPECT_IDS+=("${id_out}" "${id_in}")
+  round_no=$(( round_no + 1 ))
+  sleep "${COMMIT_WAIT}"
+done
 
 # ---------------------------------------------------------------------------
 step "Reading the obligations the chain recorded in window ${SEQ}"
@@ -126,14 +226,41 @@ echo "${OBS_JSON}" | python3 -c '
 import sys, json
 obs = json.load(sys.stdin) or []
 for o in obs:
-    print(f"  {o[\"obligationID\"]:24} {o[\"debtor\"]:10} -> {o[\"creditor\"]:10} {o[\"amount\"]:>10}")
-print(f"  {len(obs)} obligations in the window")
+    print("  %-26s %-10s -> %-10s %12s" % (o["obligationID"], o["debtor"], o["creditor"], o["amount"]))
+print("  %d obligations in the window" % len(obs))
 '
 OB_COUNT="$(echo "${OBS_JSON}" | python3 -c 'import sys,json; print(len(json.load(sys.stdin) or []))')"
-if [ "${OB_COUNT}" -ne 6 ]; then
-  echo "NOTE: ${OB_COUNT} of 6 obligations landed in window ${SEQ}; the rest crossed"
-  echo "      the boundary into the next one. The checks below use what is actually"
-  echo "      in this window, so the arithmetic still holds."
+
+# Each round submitted one obligation per institution at the same moment. If
+# both survived, the two did not conflict — which is the concurrency claim,
+# measured on a real ledger rather than asserted.
+PAIRS_INTACT=0
+PAIRS_BROKEN=0
+for i in $(seq 0 $(( ${#ROUNDS[@]} - 1 ))); do
+  have_out=$(echo "${OBS_JSON}" | grep -c "OB-${STAMP}-O${i}\"" || true)
+  have_in=$(echo "${OBS_JSON}" | grep -c "OB-${STAMP}-I${i}\"" || true)
+  if [ "${have_out}" -ge 1 ] && [ "${have_in}" -ge 1 ]; then
+    PAIRS_INTACT=$(( PAIRS_INTACT + 1 ))
+  else
+    PAIRS_BROKEN=$(( PAIRS_BROKEN + 1 ))
+    echo "round ${i}: only one side committed (Org1 ${have_out}, Org2 ${have_in})"
+  fi
+done
+if [ "${PAIRS_INTACT}" -eq "${#ROUNDS[@]}" ]; then
+  ok "all ${PAIRS_INTACT} simultaneous pairs committed: the two institutions did not contend"
+elif [ "${PAIRS_INTACT}" -gt 0 ]; then
+  echo "NOTE: ${PAIRS_INTACT} of ${#ROUNDS[@]} pairs committed intact."
+  echo "      A broken pair means one side was lost to something other than"
+  echo "      cross-institution contention \u2014 a window boundary, most likely."
+else
+  fail "no simultaneous pair survived: the two institutions are contending"
+fi
+
+EXPECTED_TOTAL=$(( ${#ROUNDS[@]} * 2 ))
+if [ "${OB_COUNT}" -ne "${EXPECTED_TOTAL}" ]; then
+  echo "NOTE: ${OB_COUNT} of ${EXPECTED_TOTAL} obligations landed in window ${SEQ}; the rest"
+  echo "      crossed the boundary into the next one. Every check below is derived"
+  echo "      from what is actually in this window, so the arithmetic still holds."
 fi
 
 # Expected net positions, derived from committed obligations.
@@ -200,13 +327,12 @@ step "Checking the settlement against the obligations"
 eval "$(echo "${SETTLED}" | python3 -c '
 import sys, json
 w = json.load(sys.stdin)
-print(f"W_STATE={w[\"state\"]}")
-print(f"W_OBS={w[\"obligations\"]}")
-print(f"W_GROSS={w[\"grossValue\"]}")
-print(f"W_NET={w[\"netValue\"]}")
-print(f"W_POSTINGS={w[\"postings\"]}")
-print(f"W_BPS={w[\"compressionBps\"]}")
-print(f"W_CLOSEDBY={w[\"closedBy\"]}")
+for name, key in [
+    ("W_STATE", "state"), ("W_OBS", "obligations"), ("W_GROSS", "grossValue"),
+    ("W_NET", "netValue"), ("W_POSTINGS", "postings"),
+    ("W_BPS", "compressionBps"), ("W_CLOSEDBY", "closedBy"),
+]:
+    print("%s=%s" % (name, w[key]))
 ')"
 
 [ "${W_STATE}" = "SETTLED" ] && ok "window state SETTLED" || fail "window state ${W_STATE}"
@@ -269,13 +395,13 @@ accounts = json.load(sys.stdin) or []
 per = collections.defaultdict(int)
 for a in accounts:
     per[a["ccy"]] += a["balance"]
-    print(f"  {a[\"account\"]:<30} {a[\"ccy\"]}  dr={a[\"debits\"]:<14} cr={a[\"credits\"]:<14} bal={a[\"balance\"]:>14}")
+    print("  %-30s %s  dr=%-14s cr=%-14s bal=%14s" % (a["account"], a["ccy"], a["debits"], a["credits"], a["balance"]))
 bad = False
 for ccy in sorted(per):
     verdict = "BALANCED" if per[ccy] == 0 else "NOT BALANCED"
     if per[ccy] != 0:
         bad = True
-    print(f"  {ccy} sums to {per[ccy]}   {verdict}")
+    print("  %s sums to %d   %s" % (ccy, per[ccy], verdict))
 sys.exit(1 if bad else 0)
 ' || fail "the books do not balance"
 

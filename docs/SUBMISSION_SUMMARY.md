@@ -13,7 +13,7 @@ PlatformOrg as regulator observer — under an
 foreign-currency leg and its INR payout leg move atomically in one transaction —
 or neither does.
 
-Correctness is demonstrated, not asserted: 39 Go unit tests (77.5% statement
+Correctness is demonstrated, not asserted: 93 Go unit tests (78.7% statement
 coverage) cover commit-without-prepare, commit-after-expiry, replayed transfer
 IDs, double-spend via a second prepare, non-party callers and integer exactness
 at 2^53+1; on the live network, a `Commit` endorsed by only one organisation
@@ -21,6 +21,25 @@ leaves the transfer `PREPARED`, a sender that tries to `Prepare` before the
 payout bank has accepted is refused, and PlatformOrg — a full channel member —
 is refused every state-changing call on a transfer it is not a party to while
 still being able to read it.
+
+Value is never written as a balance: every movement appends one immutable
+double-entry journal line applying a single amount to both a debit and a
+credit, so an unbalanced entry cannot be expressed and conservation is a
+property of the data model rather than an assertion a test remembers to make —
+verified on-chain, every currency summing to exactly zero across all accounts.
+
+Alongside the atomic two-phase commit there is a second, netting-first
+settlement path, because 2PC alone does not scale: every transfer on it writes
+the payer's balance key, so concurrent transfers collide on MVCC and adding
+peers cannot help, the contention being on the key rather than the CPU. An
+obligation instead writes only its own unique record and the submitter's
+exposure reservation, the netting window is derived arithmetically from the
+transaction timestamp so that not even a window pointer is shared, and a window
+may only be closed once it is in the past — which is what makes the closing
+range query immune to phantom reads, since no transaction can write into a
+window its own timestamp does not name. On the live network six obligations
+worth 1,800,000 fils gross settled as a single posting of 100,000, a 94.45%
+compression, with every account's balance moving by exactly its net position.
 
 Money is held in integer minor units throughout, with no floating-point amount
 anywhere in the contract and no personally identifying information on the
@@ -32,10 +51,10 @@ netted pool needs 37% less buffer than separate per-provider buffers at matched
 1% shortfall risk, a modelled estimate under assumptions documented in
 `docs/ASSUMPTIONS.md`, not a real-world claim.
 
-Phase 1 adds the token, pool, policy, attestation and payout contracts, the
-cross-ledger coordinator, the agent's optimiser behind the policy contract, the
-web applications and a Caliper benchmark; the repository's status table marks
-precisely what works today and what does not.
+Phase 1 adds the token, policy, attestation and payout contracts, pool deposits
+and withdrawals, the cross-ledger coordinator, the agent's optimiser behind the
+policy contract, the web applications and a Caliper benchmark; the repository's
+status table marks precisely what works today and what does not.
 
 ---
 

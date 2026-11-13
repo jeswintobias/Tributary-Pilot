@@ -28,7 +28,7 @@ next one starts.
 | # | Deliverable | Depends on |
 |---|---|---|
 | 1 | **Token contract.** MIST-aligned Issue / Manage (burn, split, merge) / Settle / Transact. Role-restricted mint and burn with regulator endorsement | P0.3 |
-| 2 | **Pool + netting contract.** Per-member deposits and withdrawals; netting windows computing multilateral net positions; only net amounts settle | 1 |
+| 2 | ~~**Pool + netting contract.**~~ **Built early — see below.** Netting windows computing multilateral net positions; only net amounts settle | 1 |
 | 3 | **Policy contract.** Max auto-movement, minimum pool balance, approved members, maker-checker. Every agent action routes through it | 2 |
 | 4 | **Attestation contract.** KYC and sanctions attestations as salted hashes with issuer and expiry; settlement validates in the same transaction | 1 |
 | 5 | **Payout contract.** Purpose-bound vouchers redeemable only by a verified payee ID, splits across recipients, deadline with automatic refund | 4 |
@@ -38,6 +38,42 @@ next one starts.
 | 9 | **Web (Next.js).** Sender app with total-cost quote and purpose rules, receiver view, treasury dashboard showing pool state and forecast versus actual with agent decisions and approvals, regulator view | 7 |
 | 10 | **Adversarial suite and benchmarks.** Double-spend, settle without attestation, forged and stale FX quote, agent exceeding limits, under-endorsed transaction — each must fail. Caliper for TPS and latency, k6 for API load. Measured numbers only | all |
 | 11 | **Deployment notes** for scaling with NPCI Falcon (Kubernetes / Helm) | 10 |
+
+### Built ahead of the plan
+
+Two items were pulled forward because they were the load-bearing risks, not
+because the order was wrong.
+
+**Double-entry journal** (part of item 1's substance, without the separate
+contract). Balances are never written directly; every movement appends one
+immutable entry applying a single amount to both a debit and a credit, so an
+unbalanced entry cannot be expressed. Conservation stopped being an assertion a
+test remembers to make.
+
+**Netting (item 2), minus deposits and withdrawals.** Obligations touch no
+shared key, and a window settles with one movement per net position. This was
+pulled forward because it is both the MVCC hot-key fix and the headline capital
+claim, and because a throughput number quoted without it would not survive
+concurrent load.
+
+What item 2 still owes:
+
+- **Per-member deposits and withdrawals.** There is no pool account to deposit
+  into; institutions net against each other directly. A real shared pool needs
+  both, and both are shared-key operations that would need the same treatment
+  the hot path just got.
+- **Bilateral credit limits.** Cover is checked against gross outgoing, so
+  netting compresses settlement movement but not collateral. This is the gap
+  between "we settle less" and "you need to hold less", and it is a
+  counterparty-risk decision rather than a refactor.
+- **A scheduled closer.** Any member may close a window; no member must. An
+  unclosed window holds reservations indefinitely. This belongs with the
+  service layer.
+- **Extraction into its own contract.** The journal and netting live inside the
+  settlement chaincode. A called chaincode sees the original client's identity
+  rather than its caller's, a transaction must satisfy both endorsement
+  policies, and a caller cannot read back what the callee wrote — none of which
+  is solved by moving the code.
 
 ## Deferred beyond Phase 1
 

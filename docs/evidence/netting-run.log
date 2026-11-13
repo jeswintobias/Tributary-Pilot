@@ -1,0 +1,96 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Checking the window length the chaincode is actually using
+chaincode reports current window 29909255; 60s windows would give 29909255
+OK: window length confirmed at 60s
+
+── Funding both institutions in AED (Phase 0 scaffolding)
+2026-11-13 13:05:11.200 IST 0001 INFO [chaincodeCmd] chaincodeInvokeOrQuery -> Chaincode invoke successful. result: status:200 
+2026-11-13 13:05:19.281 IST 0001 INFO [chaincodeCmd] chaincodeInvokeOrQuery -> Chaincode invoke successful. result: status:200 
+Org1MSP AED 199600000
+Org2MSP AED 150400000
+
+── Settling any window an earlier run left open
+window 29909254 was left open with 6 obligations; settling it
+OK: settled 1 window(s) left over from an earlier run
+starting balances: Org1MSP 199500000, Org2MSP 150500000
+
+── Waiting for a fresh netting window so every obligation lands in one
+sleeping 23s to the next window boundary
+OK: submitting into window 29909256
+
+── Submitting obligations in both directions, touching no shared balance
+round 0: Org1MSP owes 400000, Org2MSP owes 500000 — submitted together
+round 1: Org1MSP owes 300000, Org2MSP owes 200000 — submitted together
+round 2: Org1MSP owes 250000, Org2MSP owes 150000 — submitted together
+
+── Reading the obligations the chain recorded in window 29909256
+  OB-1794555310-O1           Org1MSP    -> Org2MSP          300000
+  OB-1794555310-I0           Org2MSP    -> Org1MSP          500000
+  OB-1794555310-O0           Org1MSP    -> Org2MSP          400000
+  OB-1794555310-I2           Org2MSP    -> Org1MSP          150000
+  OB-1794555310-O2           Org1MSP    -> Org2MSP          250000
+  OB-1794555310-I1           Org2MSP    -> Org1MSP          200000
+  6 obligations in the window
+OK: all 3 simultaneous pairs committed: the two institutions did not contend
+derived from the ledger: gross 1800000, net to settle 100000
+derived net positions: Org1MSP -100000, Org2MSP 100000
+
+── Projecting the window before closing it
+{"ccy":"AED","seq":29909256,"state":"OPEN","obligations":6,"grossValue":1800000,"netValue":100000,"postings":1,"compressionBps":9445,"openedAt":1794555360,"closedAt":0,"closedBy":""}
+OK: window reports OPEN before settlement
+
+── Refusing to close a window that is still open
+OK: closing the current window was refused:  is still open (current window is 29909256 at tx time 1794555385): a window may only be closed once it is in the past" 
+
+── Waiting for window 29909256 to fall into the past, then closing it
+2026-11-13 13:07:01.128 IST 0001 INFO [chaincodeCmd] chaincodeInvokeOrQuery -> Chaincode invoke successful. result: status:200 payload:"{\"ccy\":\"AED\",\"seq\":29909256,\"state\":\"SETTLED\",\"obligations\":6,\"grossValue\":1800000,\"netValue\":100000,\"postings\":1,\"compressionBps\":9445,\"openedAt\":1794555360,\"closedAt\":1794555421,\"closedBy\":\"Org1MSP\"}" 
+{
+    "ccy": "AED",
+    "seq": 29909256,
+    "state": "SETTLED",
+    "obligations": 6,
+    "grossValue": 1800000,
+    "netValue": 100000,
+    "postings": 1,
+    "compressionBps": 9445,
+    "openedAt": 1794555360,
+    "closedAt": 1794555421,
+    "closedBy": "Org1MSP"
+}
+
+── Checking the settlement against the obligations
+OK: window state SETTLED
+OK: window counted 6 obligations
+OK: gross 1800000 matches the obligations
+OK: net 100000 matches the derived net positions
+
+── Checking each balance moved by exactly its net position
+Org1MSP 199500000 -> 199400000  (moved -100000, net position -100000)
+Org2MSP 150500000 -> 150600000  (moved 100000, net position 100000)
+OK: Org1MSP moved by exactly its net position
+OK: Org2MSP moved by exactly its net position
+
+── Checking the reservations were released
+OK: Org1MSP has no outstanding netting exposure
+OK: Org2MSP has no outstanding netting exposure
+
+── Refusing a replayed close
+OK: replayed close refused
+
+── Conservation across every account on the ledger
+  Org1MSP                        AED  dr=600000         cr=200000000      bal=     199400000
+  issuance:AED                   AED  dr=350000000      cr=0              bal=    -350000000
+  Org2MSP                        AED  dr=0              cr=150600000      bal=     150600000
+  AED sums to 0   BALANCED
+
+── Write amplification on the shared balance keys
+netted:   1 journal postings to settle 6 obligations
+unnetted: 12 postings, two per obligation, each one serialising on a balance key
+value:    gross 1800000 obligated, net 100000 settled, compression 9445 bps
+closed by Org1MSP
+OK: netting reduced postings from 12 to 1
+
+N_EXIT=0

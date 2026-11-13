@@ -51,9 +51,11 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 60 unit tests, `cd chaincode/settlement && go test ./...` |
-| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 60 tests passing, 79.7% statement coverage |
+| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 93 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 93 tests passing, 78.7% statement coverage |
 | P1-B | **Double-entry journal** — immutable entries, derived balances | **Done** | Books verified balanced on-chain: AED 0, INR 0 |
+| P1-B3 | **Netting-first settlement** — obligations touch no shared balance key | **Done** | `./network/demo-netting.sh` — on-chain: 6 obligations, 1,800,000 gross, **100,000 net, one posting, 94.45% compression** |
+| P1-B3 | Netting concurrency claim measured, not asserted | **Done** | Tests compare real read/write sets; live run checks each simultaneous cross-org pair committed |
 | P0.2 | DRUNIX test network bring-up scripts | **Done** | `./network/up.sh` — full topology up, `mychannel` created and joined by both orgs |
 | P0.2 | Settlement chaincode deployed with `AND(SenderOrg, PayoutBankOrg)` | **Done** | `./network/deploy-cc.sh settlement` — committed, approved by both orgs |
 | P0.4b | Live happy-path and abort-path demo | **Done** | `./network/demo.sh` — settles on-chain; single-org commit refused |
@@ -61,11 +63,13 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P0.5 | Quantile forecasting notebook + pool sizing | **Done** | `agent/notebooks/forecast.ipynb` — executed, 12/12 cells, 4 figures, no errors |
 | P1 | Gateway service over the live ledger (Fabric Gateway SDK) | **Done** | `cd services/gateway && npm run check` |
 | P1 | Corridor view — act as any org, watch the contract refuse | **Done** | `npm start` → http://localhost:7700 |
-| P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 42 tests, `go test ./...` |
+| P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 93 tests, `go test ./...` |
+| P1 | Netting view in the corridor UI — live window, compression, settled windows | **Done** | `npm start` → http://localhost:7700 |
 | P0.6 | Submission summary + truth pass on this table |  **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
 | P0.2 | `PlatformOrg` as a third organisation on the channel | **Done** | `./network/add-platform-org.sh` — `Org3MSP` is a channel member; **runs no peer**, see note below |
 | — | `PlatformOrg` endorsing peers | **Planned** | Phase 1 — a regulator observer does not endorse |
-| — | Token, pool, policy, attestation, payout contracts | **Planned** | Phase 1 — see [ROADMAP.md](docs/ROADMAP.md) |
+| — | Pool deposits/withdrawals, bilateral credit limits, scheduled window closer | **Planned** | The netting half is built; these three are not — see [ROADMAP.md](docs/ROADMAP.md#built-ahead-of-the-plan) |
+| — | Token, policy, attestation, payout contracts | **Planned** | Phase 1 — see [ROADMAP.md](docs/ROADMAP.md) |
 | — | Services, web apps, AI agent, benchmarks | **Planned** | Phase 1 |
 
 **No throughput, latency or cost figure appears anywhere in this repository.**
