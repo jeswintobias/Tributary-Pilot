@@ -28,8 +28,9 @@ import {
 import { pipelineState, projectionAvailable, closeProjection, PROJECTION_DB } from './readmodel.js';
 import {
   validateCreateTransfer, validateSeed, validateTransferId, validateObligation,
-  validateWindowSeq, BadRequest, MAX_BODY_BYTES,
+  validateWindowSeq, validateRateQuery, BadRequest, MAX_BODY_BYTES,
 } from './validate.js';
+import { requestQuote, oracleIdentity, OracleUnavailable, ORACLE_ENDPOINT } from './oracle.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, '..', 'public');
@@ -250,13 +251,62 @@ async function handleApi(req, res, url) {
     return json(res, 200, await submit(as, 'SeedBalance', [ccy, amount]));
   }
 
+  // --- FX ------------------------------------------------------------------
+  // A rate enquiry. Signs nothing, moves nothing; it exists so the page can
+  // show what a transfer would convert to before anyone commits to it.
+  if (req.method === 'GET' && url.pathname === '/api/rate') {
+    const q = validateRateQuery(url.searchParams);
+    const quoted = await requestQuote({
+      baseCcy: q.baseCcy, quoteCcy: q.quoteCcy,
+      amount: q.amount, maxSlippageBps: q.maxSlippageBps,
+    });
+    return json(res, 200, {
+      baseCcy: q.baseCcy, quoteCcy: q.quoteCcy, amount: q.amount,
+      rateNum: quoted.quote.rateNum, rateDen: quoted.quote.rateDen,
+      expectedPayout: quoted.expectedPayout,
+      expiresAt: quoted.quote.expiresAt,
+      maxSlippageBps: quoted.quote.maxSlippageBps,
+      oracleID: quoted.quote.oracleID,
+      simulated: Boolean(quoted.simulated),
+    });
+  }
+
+  // The oracle's identity and key, so an operator can register it on chain.
+  if (req.method === 'GET' && url.pathname === '/api/oracle') {
+    return json(res, 200, { endpoint: ORACLE_ENDPOINT, ...(await oracleIdentity()) });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/transfers') {
     const b = validateCreateTransfer(await readBody(req));
-    return json(res, 200, await submit(as, 'CreateTransfer', [
-      b.transferID, b.senderLegAmount, b.senderCcy,
-      b.payoutLegAmount, b.payoutCcy, b.quoteID,
-      b.expiresAt, b.payoutOrg, b.payoutPayeeRef,
-    ]));
+    // A fresh quote per transfer. The chaincode treats a quote as single use
+    // — a dealt rate, not a standing one — so reusing one here would be
+    // refused on the second transfer anyway.
+    const quoted = await requestQuote({
+      baseCcy: b.senderCcy, quoteCcy: b.payoutCcy,
+      amount: b.senderLegAmount, maxSlippageBps: b.maxSlippageBps,
+    });
+    return json(res, 200, {
+      ...(await submit(as, 'CreateTransfer', [
+        b.transferID, b.senderLegAmount, b.senderCcy,
+        b.payoutLegAmount, b.payoutCcy,
+        JSON.stringify(quoted.quote), quoted.signature,
+        b.expiresAt, b.payoutOrg, b.payoutPayeeRef,
+      ])),
+      quote: quoted.quote,
+      expectedPayout: quoted.expectedPayout,
+    });
+  }
+
+  // Whether a beneficiary may be paid, and why not. A query, so a user is told
+  // before they try rather than after.
+  if (req.method === 'GET' && url.pathname === '/api/beneficiary') {
+    const ref = url.searchParams.get('ref') ?? '';
+    if (!ref) throw new BadRequest('ref is required');
+    return json(res, 200, await evaluate(as, 'CheckBeneficiary', [ref]));
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/attestations') {
+    return json(res, 200, { attestations: (await evaluate(as, 'ListAttestations')) ?? [] });
   }
 
   // /api/transfers/<id>/<Accept|Prepare|Commit|Abort>
@@ -315,6 +365,10 @@ const server = http.createServer(async (req, res) => {
     return await serveStatic(res, url.pathname);
   } catch (err) {
     if (err instanceof BadRequest) return json(res, 400, { error: err.message });
+    // 503: the ledger is fine, a service this one depends on is not. A
+    // transfer refused because no rate could be signed is not a bad request
+    // and not a ledger rejection.
+    if (err instanceof OracleUnavailable) return json(res, 503, { error: err.message });
     const message = describeError(err);
     console.error(`${req.method} ${url.pathname} -> ${message}`);
     // 422: the ledger understood the call and refused it. That is a result, not

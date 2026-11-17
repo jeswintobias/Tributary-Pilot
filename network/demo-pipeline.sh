@@ -22,7 +22,7 @@ STAMP="$(date +%s)"
 PROJECTOR_DIR="${REPO_DIR}/services/projector"
 
 GOOD_PAYEE="sha256:pipeline-good-${STAMP}"
-BAD_PAYEE="sha256:pipeline-closed-account"
+BAD_PAYEE="sha256:pipeline-closed-${STAMP}"
 
 configure_platform
 require_tools
@@ -73,10 +73,52 @@ db.close();
 settle_transfer() {
   local id="$1" payee="$2"
   local expiry=$(( $(date +%s) + 600 ))
-  invoke 1 "{\"Args\":[\"CreateTransfer\",\"${id}\",\"220000\",\"AED\",\"3000000\",\"INR\",\"quote-${id}\",\"${expiry}\",\"Org2MSP\",\"${payee}\"]}" >/dev/null
+  invoke 1 "$(create_transfer_args --id "${id}" --sender 220000 --sender-ccy AED \
+    --payout-ccy INR --expires "${expiry}" --payout-org Org2MSP --payee "${payee}")" >/dev/null
   invoke 2 "{\"Args\":[\"Accept\",\"${id}\"]}" >/dev/null
   invoke 1 "{\"Args\":[\"Prepare\",\"${id}\"]}" >/dev/null
   invoke 2 "{\"Args\":[\"Commit\",\"${id}\"]}" >/dev/null
+}
+
+
+# attest issues a beneficiary's KYC and sanctions attestations, signed by
+# PlatformOrg.
+#
+# Settlement is gated on both, so a demo that pays somebody has to screen them
+# first. PlatformOrg runs no peer of its own: it signs with its own identity
+# and borrows Org1's Lite Peer as transport.
+#
+# The references are stamped per run because a revocation is permanent for a
+# subject — the contract refuses to re-issue over one, so a sanctions hit
+# cannot be papered over. That makes any shared reference single-use.
+ORG3_ADMIN_MSP="${TRIBUTARY_HOME}/platformorg/organizations/peerOrganizations/org3.example.com/users/Admin@org3.example.com/msp"
+
+attest() {
+  local subject="$1"
+  local expires=$(( $(date +%s) + 300 * 24 * 60 * 60 ))
+  local kind args
+  if [ ! -d "${ORG3_ADMIN_MSP}" ]; then
+    die "PlatformOrg's admin MSP is missing; run ./network/add-platform-org.sh first"
+  fi
+  for kind in KYC SANCTIONS; do
+    args="$(node -e '
+const [, subject, kind, expires] = process.argv;
+process.stdout.write(JSON.stringify({
+  Args: ["IssueAttestation", subject, kind, expires, "case-file-demo"],
+}));
+' -- "${subject}" "${kind}" "${expires}")"
+    (
+      export CORE_PEER_LOCALMSPID="Org3MSP"
+      export CORE_PEER_MSPCONFIGPATH="${ORG3_ADMIN_MSP}"
+      export CORE_PEER_ADDRESS="localhost:7051"
+      export CORE_PEER_TLS_ROOTCERT_FILE="${PEER0_ORG1_CA}"
+      export CORE_PEER_TLS_ENABLED=true
+      peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
+        --tls --cafile "${ORDERER_CA}" -C "${CHANNEL_NAME}" -n "${CC_NAME}" \
+        "${BOTH_PEERS[@]}" -c "${args}" >/dev/null 2>&1 || true
+    )
+  done
+  sleep "${COMMIT_WAIT}"
 }
 
 # ---------------------------------------------------------------------------
@@ -84,7 +126,9 @@ step "Funding, so the two-phase commit has something to move"
 # ---------------------------------------------------------------------------
 invoke 1 '{"Args":["SeedBalance","AED","10000000"]}' >/dev/null
 invoke 2 '{"Args":["SeedBalance","INR","100000000"]}' >/dev/null
-ok "balances seeded"
+attest "${GOOD_PAYEE}"
+attest "${BAD_PAYEE}"
+ok "balances seeded and both beneficiaries screened"
 
 # ---------------------------------------------------------------------------
 step "Settling two transfers on the ledger"

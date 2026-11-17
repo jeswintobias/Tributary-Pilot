@@ -29,9 +29,9 @@ next one starts.
 |---|---|---|
 | 1 | **Token contract.** MIST-aligned Issue / Manage (burn, split, merge) / Settle / Transact. Role-restricted mint and burn with regulator endorsement | P0.3 |
 | 2 | ~~**Pool + netting contract.**~~ **Built early — see below.** Netting windows computing multilateral net positions; only net amounts settle | 1 |
-| 3 | **Policy contract.** Max auto-movement, minimum pool balance, approved members, maker-checker. Every agent action routes through it | 2 |
-| 4 | **Attestation contract.** KYC and sanctions attestations as salted hashes with issuer and expiry; settlement validates in the same transaction | 1 |
-| 5 | **Payout contract.** Purpose-bound vouchers redeemable only by a verified payee ID, splits across recipients, deadline with automatic refund | 4 |
+| 3 | ~~**Policy contract.**~~ **Built — see below.** Max auto-movement, minimum pool balance, approved members, maker-checker. Every agent action routes through it | 2 |
+| 4 | ~~**Attestation contract.**~~ **Built — see below.** KYC and sanctions attestations as salted hashes with issuer and expiry; settlement validates in the same transaction | 1 |
+| 5 | ~~**Payout contract.**~~ **Built — see below.** Purpose-bound vouchers redeemable only by a verified payee ID, splits across recipients, deadline with automatic refund | 4 |
 | 6 | **Cross-ledger coordinator.** Foreign side as a second channel; a coordinator service runs prepare → anchor proof → verify → commit/abort. Labelled "NPCI Interop/Coordinator pattern — simulated" | 1 |
 | 7 | **Services (Node.js / TypeScript).** Gateway on the Fabric Gateway SDK with roles, FX oracle issuing signed quotes with expiry and slippage bound, simulated UPI / e₹ payout adapter, event listener, compliance service with an encrypted Postgres PII vault | 1–5 |
 | 8 | **AI agent (Python).** Quantile forecaster → optimiser trading idle-capital cost against shortfall cost → proposed actions submitted through the policy contract → on-ledger audit log. Optional LLM layer explains decisions in plain English and does nothing else | 3, P0.5 |
@@ -40,6 +40,26 @@ next one starts.
 | 11 | **Deployment notes** for scaling with NPCI Falcon (Kubernetes / Helm) | 10 |
 
 ### Built ahead of the plan
+
+**Phase D (items 3, 4, 5 and the FX oracle from item 7).** Signed FX quotes,
+KYC and sanctions attestations gating settlement, policy with maker-checker,
+and purpose-bound payout vouchers. All four live in the settlement chaincode
+rather than in separate contracts, for the reason recorded under the journal
+below — and in the attestation's case because the check *must* happen in the
+same transaction as the movement, which a cross-chaincode call would make
+harder rather than easier. [CONTROLS.md](CONTROLS.md) has the detail.
+
+What these still owe:
+
+- **The allow-lists are compile-time constants.** `OracleMSPs`,
+  `AttestorMSPs` and `PolicyAdminMSPs` belong in the channel configuration, so
+  that adding an oracle or an attestor is a config update rather than a
+  chaincode upgrade. This is the weakest part of the design.
+- **The oracle's key is a file.** It belongs in an HSM; the ₹8,000 line in the
+  Phase 1 budget is for exactly this.
+- **Policy has no velocity limits**, only per-transfer caps.
+- **Purposes are free text.** `TUITION` is recorded, not enforced.
+
 
 Two items were pulled forward because they were the load-bearing risks, not
 because the order was wrong.

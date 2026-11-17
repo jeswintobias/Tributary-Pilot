@@ -691,8 +691,12 @@ func TestEmptyArguments_Rejected(t *testing.T) {
 		// malformed code rather than as a missing field.
 		{"empty senderCcy", l.create(senderOrg, "e1", senderLeg, "", payoutLeg, inr,
 			quoteID, expiresAt, payoutOrg, payeeRef), "must be three letters"},
-		{"empty quoteID", l.create(senderOrg, "e2", senderLeg, aed, payoutLeg, inr,
-			"", expiresAt, payoutOrg, payeeRef), "quoteID must not be empty"},
+		// Through createWith, because create() deals a quote per transfer and
+		// would turn an empty ID into a non-empty one — hiding the very check
+		// this case is about.
+		{"empty quoteID", l.createWith(senderOrg, "e2", senderLeg, aed, payoutLeg, inr,
+			l.quoteFor("", aed, senderLeg, inr, payoutLeg, expiresAt), "sig",
+			expiresAt, payoutOrg, payeeRef), "quoteID must not be empty"},
 		{"empty payeeRef", l.create(senderOrg, "e3", senderLeg, aed, payoutLeg, inr,
 			quoteID, expiresAt, payoutOrg, ""), "payoutPayeeRef must not be empty"},
 	} {

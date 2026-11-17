@@ -48,6 +48,7 @@ const (
 	// name may not begin with either, or it could pose as the issuer.
 	issuanceAccountPrefix = "issuance:"
 	escrowAccountPrefix   = "escrow:"
+	voucherAccountPrefix  = "voucher:"
 )
 
 // Entry kinds, recorded so the journal reads as a history rather than a list
@@ -58,6 +59,13 @@ const (
 	KindRelease = "RELEASE" // escrow:<transferID> -> holder (abort)
 	KindSettle  = "SETTLE"  // escrow:<transferID> -> payee (commit)
 	KindNet     = "NET"     // net debtor -> net creditor (netting window close)
+
+	// Voucher movements. Binding is not a payment: value leaves the
+	// beneficiary's balance for an account it can only leave again to the
+	// recipients the voucher names, or back on expiry.
+	KindVoucherBind   = "VBIND"
+	KindVoucherRedeem = "VREDEEM"
+	KindVoucherRefund = "VREFUND"
 )
 
 // Entry is one immutable movement of value. It is never updated or deleted.
@@ -347,6 +355,10 @@ func isReservedAccount(account string) bool {
 	if isIssuanceAccount(account) {
 		return true
 	}
-	return len(account) > len(escrowAccountPrefix) &&
-		account[:len(escrowAccountPrefix)] == escrowAccountPrefix
+	if len(account) > len(escrowAccountPrefix) &&
+		account[:len(escrowAccountPrefix)] == escrowAccountPrefix {
+		return true
+	}
+	return len(account) > len(voucherAccountPrefix) &&
+		account[:len(voucherAccountPrefix)] == voucherAccountPrefix
 }

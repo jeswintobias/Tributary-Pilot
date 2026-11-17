@@ -1,0 +1,75 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Funding, and settling Ravi's remittance
+quote q-TP-RAVI-1794931650-1794931683853 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+OK: TP-RAVI-1794931650 settled: 5003482 INR arrived for the beneficiary
+beneficiary balance: 5003482 INR
+
+── Screening the two recipients Ravi named
+OK: the college and the mother are both attested
+
+── Binding the money to its purpose
+2501741 INR bound to TUITION for the college
+2501741 INR bound to FAMILY for his mother
+OK: voucher V-1794931650 issued
+beneficiary 5003482 -> 0, voucher holds 5003482
+OK: the money is no longer the beneficiary's to spend freely
+OK: the whole payout is bound to its purposes
+
+── A voucher that does not account for the whole payout
+OK: a voucher that leaves part of the payout unaccounted for is refused
+
+── The college claims its fees
+college 2501741, mother 0
+OK: the college received exactly its share
+OK: the family's share has not moved
+OK: the same split cannot be claimed twice
+
+── A sanctions hit on a recipient who has not claimed yet
+OK: redemption by a newly sanctioned recipient is refused
+OK: she received nothing
+
+── What was never claimed comes back
+OK: refunding early is refused: the recipient may simply not have claimed yet
+waiting for the voucher to expire at 1794931839...
+beneficiary 2501741, voucher 0, college 2501741
+OK: the unclaimed share returned to the beneficiary
+OK: the voucher account is empty
+{
+    "voucherID": "V-1794931650",
+    "transferID": "TP-RAVI-1794931650",
+    "issuer": "Org2MSP",
+    "ccy": "INR",
+    "totalAmount": 5003482,
+    "redeemedAmount": 2501741,
+    "splits": [
+        {
+            "purpose": "TUITION",
+            "payeeRef": "sha256:college-fees-1794931650",
+            "amount": 2501741,
+            "redeemed": true,
+            "redeemedAt": 1794931757,
+            "redeemedBy": "Org2MSP"
+        },
+        {
+            "purpose": "FAMILY",
+            "payeeRef": "sha256:mother-upi-1794931650",
+            "amount": 2501741,
+            "redeemed": false,
+            "redeemedAt": 0,
+            "redeemedBy": ""
+        }
+    ],
+    "expiresAt": 1794931839,
+    "state": "REFUNDED",
+    "issuedAt": 1794931749,
+    "resolvedAt": 1794931839
+}
+
+── Conservation across every account
+  AED sums to 0   BALANCED
+  INR sums to 0   BALANCED
+
+V_EXIT=0

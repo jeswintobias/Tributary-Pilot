@@ -525,6 +525,17 @@ after Abort — state <span class="ok">"ABORTED"</span>
       </div>
     </div>
 
+    <p class="step-note" style="border-left:3px solid var(--pending); padding-left:.8rem">
+      <strong>Correction, 17 November 2026.</strong> Conservation figures read from
+      <code>ListBalances</code> are only trustworthy when the ledger held ten accounts or
+      fewer: DRUNIX's range queries silently return at most ten rows, which was found later
+      and is written up in
+      <a href="../DRUNIX_RANGE_QUERY_BUG.md">DRUNIX_RANGE_QUERY_BUG.md</a>. The netting
+      figures on this page folded three or four accounts in one currency and are unaffected;
+      the Phase&nbsp;B claim of balanced books across ten accounts is withdrawn, because ten
+      is exactly the limit.
+    </p>
+
     <p class="step-note">
       Every account moved by exactly its net position — Org1MSP by −100,000 and Org2MSP by
       +100,000 — and the script derives those expected positions from the obligations the

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
+	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/queryresult"
 )
 
 const (
@@ -41,7 +42,8 @@ func (s *SmartContract) CreateTransfer(
 	senderCcy string,
 	payoutLegAmount uint64,
 	payoutCcy string,
-	quoteID string,
+	quote Quote,
+	quoteSignature string,
 	expiresAt int64,
 	payoutOrg string,
 	payoutPayeeRef string,
@@ -49,7 +51,7 @@ func (s *SmartContract) CreateTransfer(
 	if err := requireID("transferID", transferID, maxIDLen); err != nil {
 		return err
 	}
-	if err := requireID("quoteID", quoteID, maxIDLen); err != nil {
+	if err := requireID("quoteID", quote.QuoteID, maxIDLen); err != nil {
 		return err
 	}
 	if err := requireID("payoutOrg", payoutOrg, maxIDLen); err != nil {
@@ -113,12 +115,36 @@ func (s *SmartContract) CreateTransfer(
 	if err != nil {
 		return err
 	}
+
+	// The rate is checked before anything is written. A transfer may only
+	// exist at a rate an oracle signed, recently, applied to these exact two
+	// legs — see quote.go for why all three conditions are needed.
+	if err := verifyQuote(ctx, quote, quoteSignature,
+		senderCcy, senderLegAmount, payoutCcy, payoutLegAmount, now); err != nil {
+		return fmt.Errorf("quote rejected: %w", err)
+	}
+	// A quote is a dealt rate, not a standing one. Allowing reuse would let a
+	// sender take one favourable quote and keep spending it while the market
+	// moved away from it, which is precisely the exposure the expiry is meant
+	// to bound.
+	if err := consumeQuote(ctx, quote.QuoteID, transferID, now); err != nil {
+		return err
+	}
+
 	if expiresAt <= now {
 		return fmt.Errorf("expiresAt %d is not in the future (tx time %d)", expiresAt, now)
 	}
 	// An unbounded expiry would let an accepted transfer hold the counterparty's
 	// funds indefinitely, since a prepared transfer can only be aborted once it
 	// has expired.
+	// Operating limits. Checked at creation, because a transfer outside policy
+	// should never exist to be accepted: refusing it later would mean a
+	// counterparty had already agreed to something the channel does not permit.
+	if err := checkTransferAgainstPolicy(ctx, senderOrg, payoutOrg, senderCcy,
+		senderLegAmount, expiresAt, now); err != nil {
+		return fmt.Errorf("policy refused: %w", err)
+	}
+
 	if expiresAt > now+MaxSettlementWindowSeconds {
 		return fmt.Errorf(
 			"expiresAt %d is more than %d seconds ahead (tx time %d)",
@@ -134,7 +160,8 @@ func (s *SmartContract) CreateTransfer(
 		PayoutLegAmount: payoutLegAmount,
 		PayoutCcy:       payoutCcy,
 		PayoutPayeeRef:  payoutPayeeRef,
-		QuoteID:         quoteID,
+		QuoteID:         quote.QuoteID,
+		Quote:           quote,
 		ExpiresAt:       expiresAt,
 		State:           StateCaptured,
 		CreatedAt:       now,
@@ -225,6 +252,12 @@ func (s *SmartContract) Prepare(ctx contractapi.TransactionContextInterface, tra
 		return fmt.Errorf("transfer %q expired at %d (tx time %d)", transferID, t.ExpiresAt, now)
 	}
 
+	// Compliance before locking. A beneficiary who cannot be paid should never
+	// cause the counterparty's funds to be held for the settlement window.
+	if err := requireAttestations(ctx, t.PayoutPayeeRef, now); err != nil {
+		return fmt.Errorf("prepare refused: %w", err)
+	}
+
 	// A lock is a real movement into the transfer's escrow account, not a flag
 	// on a balance. Locked funds have left the payer, so "available" needs no
 	// arithmetic and no reconciliation.
@@ -288,6 +321,15 @@ func (s *SmartContract) Commit(ctx contractapi.TransactionContextInterface, tran
 
 	if t.ProofHash != proofHash(t) {
 		return fmt.Errorf("transfer %q proof hash mismatch: state was modified after prepare", transferID)
+	}
+
+	// Checked again here, and this is the one that matters: Prepare only
+	// locked funds, Commit moves them. An attestation revoked between the two
+	// phases — a sanctions hit arriving mid-settlement — has to stop the
+	// payout, and checking only at Prepare would leave a window as long as the
+	// settlement window in which it does not.
+	if err := requireAttestations(ctx, t.PayoutPayeeRef, now); err != nil {
+		return fmt.Errorf("commit refused: %w", err)
 	}
 
 	// Both legs move out of escrow through ONE journal, so the second posting
@@ -404,23 +446,17 @@ func (s *SmartContract) GetBalance(ctx contractapi.TransactionContextInterface, 
 // range between endorsement and validation — so nothing that changes state may
 // call this. It exists for the gateway and the operator views, which read.
 func (s *SmartContract) ListTransfers(ctx contractapi.TransactionContextInterface) ([]*Transfer, error) {
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(transferKeyPrefix, []string{})
-	if err != nil {
-		return nil, fmt.Errorf("range over transfers: %w", err)
-	}
-	defer iter.Close()
-
 	out := []*Transfer{}
-	for iter.HasNext() {
-		kv, err := iter.Next()
-		if err != nil {
-			return nil, fmt.Errorf("read next transfer: %w", err)
-		}
+	err := forEachInRange(ctx, transferKeyPrefix, []string{}, func(kv *queryresult.KV) error {
 		var t Transfer
 		if err := json.Unmarshal(kv.GetValue(), &t); err != nil {
-			return nil, fmt.Errorf("decode transfer at %q: %w", kv.GetKey(), err)
+			return fmt.Errorf("decode transfer at %q: %w", kv.GetKey(), err)
 		}
 		out = append(out, &t)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -429,24 +465,18 @@ func (s *SmartContract) ListTransfers(ctx contractapi.TransactionContextInterfac
 //
 // Query-only, for the same reason as ListTransfers.
 func (s *SmartContract) ListBalances(ctx contractapi.TransactionContextInterface) ([]*AccountBalance, error) {
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(accountKeyPrefix, []string{})
-	if err != nil {
-		return nil, fmt.Errorf("range over balances: %w", err)
-	}
-	defer iter.Close()
-
 	out := []*AccountBalance{}
-	for iter.HasNext() {
-		kv, err := iter.Next()
-		if err != nil {
-			return nil, fmt.Errorf("read next balance: %w", err)
-		}
+	err := forEachInRange(ctx, accountKeyPrefix, []string{}, func(kv *queryresult.KV) error {
 		var b AccountBalance
 		if err := json.Unmarshal(kv.GetValue(), &b); err != nil {
-			return nil, fmt.Errorf("decode account at %q: %w", kv.GetKey(), err)
+			return fmt.Errorf("decode account at %q: %w", kv.GetKey(), err)
 		}
 		b.Balance = int64(b.Credits) - int64(b.Debits)
 		out = append(out, &b)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -533,6 +563,14 @@ func proofHash(t Transfer) string {
 		t.PayoutCcy,
 		t.PayoutPayeeRef,
 		t.QuoteID,
+		// The rate is part of the economic terms. Anchoring the quote ID
+		// without it would let the recorded rate be altered between prepare
+		// and commit while the hash still matched.
+		t.Quote.OracleID,
+		strconv.FormatUint(t.Quote.RateNum, 10),
+		strconv.FormatUint(t.Quote.RateDen, 10),
+		strconv.FormatUint(t.Quote.MaxSlippageBps, 10),
+		strconv.FormatInt(t.Quote.ExpiresAt, 10),
 		strconv.FormatInt(t.ExpiresAt, 10),
 		strconv.FormatInt(t.CreatedAt, 10),
 		strconv.FormatInt(t.AcceptedAt, 10),

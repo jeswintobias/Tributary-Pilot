@@ -51,9 +51,9 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 |---|---|---|---|
 | P0.1 | Docs: architecture, settlement flow, threat model, assumptions, roadmap | **Done** | Read them in [`docs/`](docs/) |
 | P0.1 | README with status and real-vs-simulated tables | **Done** | This file |
-| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 93 unit tests, `cd chaincode/settlement && go test ./...` |
-| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 93 tests passing, 78.7% statement coverage |
-| P1-B | **Double-entry journal** — immutable entries, derived balances | **Done** | Books verified balanced on-chain: AED 0, INR 0 |
+| P0.3 | Settlement chaincode (Go) — capture → accept → prepare → commit | **Done** | 187 unit tests, `cd chaincode/settlement && go test ./...` |
+| P0.4a | Go unit tests with a Fabric-accurate mock stub | **Done** | 187 tests passing, 76.8% statement coverage. The mock reproduces DRUNIX's range truncation on purpose |
+| P1-B | **Double-entry journal** — immutable entries, derived balances | **Done** | 187 unit tests. The live on-chain check is **withdrawn** — it read a truncated account list, see [the DRUNIX range-query bug](docs/DRUNIX_RANGE_QUERY_BUG.md) |
 | P1-B3 | **Netting-first settlement** — obligations touch no shared balance key | **Done** | `./network/demo-netting.sh` — on-chain: 6 obligations, 1,800,000 gross, **100,000 net, one posting, 94.44% compression** |
 | P1-B3 | **Multilateral netting** across three institutions | **Done** | `./network/demo-netting-multilateral.sh` — a three-way cycle settles with **zero postings**; a chain settles with one, the intermediary never written |
 | P1-B3 | Netting concurrency claim measured, not asserted | **Done** | Tests compare real read/write sets; live run checks each simultaneous cross-org pair committed |
@@ -64,12 +64,18 @@ Updated as work lands. **If it is not marked Done, it does not work yet.**
 | P0.5 | Quantile forecasting notebook + pool sizing | **Done** | `agent/notebooks/forecast.ipynb` — executed, 12/12 cells, 4 figures, no errors |
 | P1 | Gateway service over the live ledger (Fabric Gateway SDK) | **Done** | `cd services/gateway && npm run check` |
 | P1 | Corridor view — act as any org, watch the contract refuse | **Done** | `npm start` → http://localhost:7700 |
-| P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 93 tests, `go test ./...` |
+| P1 | `ListTransfers` / `ListBalances` ledger queries | **Done** | 187 tests, `go test ./...` |
 | P1 | Netting view in the corridor UI — live window, compression, settled windows | **Done** | `npm start` → http://localhost:7700 |
 | P1-C | **Event projector** with a checkpoint — a restart replays, it does not lose or duplicate | **Done** | `./network/demo-pipeline.sh` — live restart re-delivered events, applied none twice |
 | P1-C | **Transactional outbox** — read model, checkpoint and queue commit together | **Done** | 27 tests, `cd services/projector && npm test` |
 | P1-C | **Payout worker** with leases, backoff and a dead-letter queue | **Done** | Live: a rejected beneficiary dead-lettered while a healthy payout went through |
 | P1-C | **CQRS read model** served to the UI, with the lag stated | **Done** | `/api/pipeline` — lag in blocks against the ledger's real height from `qscc` |
+| P1-D | **Signed FX quotes** — a transfer may only exist at a rate an oracle signed | **Done** | `./network/demo-compliance.sh` — live: forged, stale and mismatched quotes all refused |
+| P1-D | FX encoding agreed between Go and the oracle service | **Done** | A signed vector from the service is re-derived and verified by the chaincode |
+| P1-D | **KYC / sanctions attestations** gating settlement | **Done** | Live: a revocation between prepare and commit stopped the payout |
+| P1-D | **Policy with maker-checker** — a proposer may not approve its own change | **Done** | 187 unit tests, `cd chaincode/settlement && go test ./...` |
+| P1-D | **Purpose-bound vouchers** — splits, screening, deadline, refund | **Done** | Unit tests; live run in `./network/demo-voucher.sh` |
+| — | **Found in DRUNIX:** range queries silently truncate at 10 results | **Reported** | [DRUNIX_RANGE_QUERY_BUG.md](docs/DRUNIX_RANGE_QUERY_BUG.md); worked around in `iterate.go` |
 | P0.6 | Submission summary + truth pass on this table |  **Done** | [`docs/SUBMISSION_SUMMARY.md`](docs/SUBMISSION_SUMMARY.md) |
 | P0.2 | `PlatformOrg` as a third organisation on the channel | **Done** | `./network/add-platform-org.sh` — `Org3MSP` is a channel member; **runs no peer**, see note below |
 | — | `PlatformOrg` endorsing peers | **Planned** | Phase 1 — a regulator observer does not endorse |
@@ -211,6 +217,9 @@ in this repository; the scripts clone it alongside and wrap its `network.sh`.
 ./network/verify-platformorg.sh      # prove T2.1: a non-party org cannot settle
 ./network/demo-netting-multilateral.sh   # three-party netting (needs PlatformOrg)
 ./network/demo-pipeline.sh           # projector -> queue -> payout worker, end to end
+./network/setup-fx-compliance.sh     # register the FX oracle, attest the demo beneficiaries
+./network/demo-compliance.sh         # the refusals: forged rates, stale rates, unscreened payees
+./network/demo-voucher.sh            # purpose-bound splits, redemption and refund
 ./network/down.sh                    # tear down and clean
 ```
 

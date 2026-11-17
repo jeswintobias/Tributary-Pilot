@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
+	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/queryresult"
 )
 
 // Netting-first settlement.
@@ -203,6 +204,10 @@ func (s *SmartContract) SubmitObligation(
 	}
 	if debtor == creditor {
 		return fmt.Errorf("debtor and creditor are both %q", debtor)
+	}
+
+	if err := checkObligationAgainstPolicy(ctx, debtor, creditor, ccy, amount); err != nil {
+		return fmt.Errorf("policy refused: %w", err)
 	}
 
 	now, err := txTime(ctx)
@@ -602,23 +607,17 @@ func (s *SmartContract) CurrentWindow(ctx contractapi.TransactionContextInterfac
 
 // ListWindows returns every settled window, in key order. Query-only.
 func (s *SmartContract) ListWindows(ctx contractapi.TransactionContextInterface) ([]*Window, error) {
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(windowKeyPrefix, []string{})
-	if err != nil {
-		return nil, fmt.Errorf("range over windows: %w", err)
-	}
-	defer iter.Close()
-
 	out := []*Window{}
-	for iter.HasNext() {
-		kv, err := iter.Next()
-		if err != nil {
-			return nil, fmt.Errorf("read next window: %w", err)
-		}
+	err := forEachInRange(ctx, windowKeyPrefix, []string{}, func(kv *queryresult.KV) error {
 		var w Window
 		if err := json.Unmarshal(kv.GetValue(), &w); err != nil {
-			return nil, fmt.Errorf("decode window at %q: %w", kv.GetKey(), err)
+			return fmt.Errorf("decode window at %q: %w", kv.GetKey(), err)
 		}
 		out = append(out, &w)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -731,25 +730,28 @@ func exposureKey(ctx contractapi.TransactionContextInterface, account, ccy strin
 // Safe inside CloseWindow only because that function has already established
 // that the window is in the past and therefore immutable. See the phantom-read
 // note at the top of this file.
+//
+// That argument matters more now than it did. This reads through the paginated
+// API (see iterate.go, and the DRUNIX defect it works around), and a paginated
+// range does not record the range in the transaction's read set the way an
+// unpaginated one does — so Fabric's own phantom-read protection is not
+// available here. The design never relied on it: the window is frozen by time
+// before anything reads it. But it is now the ONLY thing standing between this
+// fold and a phantom, so the time check is load-bearing rather than
+// belt-and-braces.
 func windowObligations(ctx contractapi.TransactionContextInterface, ccy string, seq int64) ([]Obligation, error) {
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(
-		obligationKeyPrefix, []string{ccy, seqAttr(seq)})
-	if err != nil {
-		return nil, fmt.Errorf("range over obligations in %s/%d: %w", ccy, seq, err)
-	}
-	defer iter.Close()
-
 	out := []Obligation{}
-	for iter.HasNext() {
-		kv, err := iter.Next()
-		if err != nil {
-			return nil, fmt.Errorf("read next obligation: %w", err)
-		}
-		var ob Obligation
-		if err := json.Unmarshal(kv.GetValue(), &ob); err != nil {
-			return nil, fmt.Errorf("decode obligation at %q: %w", kv.GetKey(), err)
-		}
-		out = append(out, ob)
+	err := forEachInRange(ctx, obligationKeyPrefix, []string{ccy, seqAttr(seq)},
+		func(kv *queryresult.KV) error {
+			var ob Obligation
+			if err := json.Unmarshal(kv.GetValue(), &ob); err != nil {
+				return fmt.Errorf("decode obligation at %q: %w", kv.GetKey(), err)
+			}
+			out = append(out, ob)
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("obligations in %s/%d: %w", ccy, seq, err)
 	}
 	return out, nil
 }

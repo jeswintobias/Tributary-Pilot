@@ -377,6 +377,16 @@ nonsense — silently, on the one number this whole path exists to produce. The
 128-bit intermediate is exact for every input the ledger can hold.
 `TestCompressionBps` fails on the naive formula at two of its cases.
 
+### A fold is only as good as the read underneath it
+
+Both the conservation check and the netting fold iterate state with a range
+query, and on DRUNIX those return at most ten rows without saying so. A
+conservation check over a partial read does not fail loudly, it answers a
+different question; a netting window over a partial read **settles** the wrong
+amount. Every range query in this contract now goes through a paginated helper
+for that reason — see
+[DRUNIX_RANGE_QUERY_BUG.md](DRUNIX_RANGE_QUERY_BUG.md).
+
 ### Double entry does not catch a wrong net
 
 Worth stating because it is easy to assume otherwise. Doubling both sides of a

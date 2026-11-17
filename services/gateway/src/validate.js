@@ -69,10 +69,33 @@ export function validateCreateTransfer(body) {
     senderCcy: ccy('senderCcy', body.senderCcy),
     payoutLegAmount: amount('payoutLegAmount', body.payoutLegAmount),
     payoutCcy: ccy('payoutCcy', body.payoutCcy),
-    quoteID: id('quoteID', body.quoteID),
+    // No quoteID from the client any more. The rate is fetched from the oracle
+    // and signed by it; a client-supplied quote identifier would be a field
+    // the caller controls on something the caller must not control.
+    maxSlippageBps: slippage(body.maxSlippageBps),
     expiresAt: expiry(body.expiresAt),
     payoutOrg: id('payoutOrg', body.payoutOrg),
     payoutPayeeRef: id('payoutPayeeRef', body.payoutPayeeRef, PAYEE_REF),
+  };
+}
+
+/** Tolerance in basis points, bounded at 100%. */
+function slippage(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  const v = str(value).trim();
+  if (!DIGITS.test(v)) throw new BadRequest('maxSlippageBps must be a whole number');
+  const bps = Number(v);
+  if (bps > 10000) throw new BadRequest('maxSlippageBps cannot exceed 10000 (100%)');
+  return bps;
+}
+
+/** A rate enquiry, which signs nothing and moves nothing. */
+export function validateRateQuery(params) {
+  return {
+    baseCcy: ccy('baseCcy', params.get('base')),
+    quoteCcy: ccy('quoteCcy', params.get('quote')),
+    amount: amount('amount', params.get('amount') ?? '0'),
+    maxSlippageBps: slippage(params.get('slippage')),
   };
 }
 

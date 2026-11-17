@@ -13,7 +13,7 @@ PlatformOrg as regulator observer — under an
 foreign-currency leg and its INR payout leg move atomically in one transaction —
 or neither does.
 
-Correctness is demonstrated, not asserted: 93 Go unit tests (78.7% statement
+Correctness is demonstrated, not asserted: 187 Go unit tests (76.8% statement
 coverage) cover commit-without-prepare, commit-after-expiry, replayed transfer
 IDs, double-spend via a second prepare, non-party callers and integer exactness
 at 2^53+1; on the live network, a `Commit` endorsed by only one organisation
@@ -42,6 +42,19 @@ worth 1,800,000 fils gross settled as a single posting of 100,000, a 94.44%
 compression, with every account's balance moving by exactly its net position;
 and across three institutions a cycle of debts cancelled so completely that the
 window settled by writing no balance at all.
+
+A transfer can now only exist at a rate somebody signed: an off-chain oracle
+signs a quote and the chaincode verifies the signature, the expiry against the
+transaction timestamp, and that the two legs actually sit at that rate within a
+stated tolerance — so a forged rate, yesterday's rate, and a genuine rate
+attached to unrelated legs are each refused on the live network. It can only
+settle to a beneficiary somebody screened: live KYC and sanctions attestations
+are required at prepare and **again at commit**, so a sanctions hit arriving
+while funds are locked stops the payout rather than arriving too late, which is
+demonstrated on-chain. Operating limits sit behind maker-checker, where the
+organisation that proposes a change may not be the one that approves it, and
+payouts can be bound to their purpose: a remittance splits across named,
+screened recipients with a deadline, and whatever is never claimed returns.
 
 Money is held in integer minor units throughout, with no floating-point amount
 anywhere in the contract and no personally identifying information on the
@@ -93,6 +106,13 @@ the repository does not support them.
   data at a stated quantile and netting window; it ranges 14%–44% across that
   grid, and converting it to money needs a balance sheet and a cost of capital
   we do not have.
-- Not "compliance built in". The attestation contract is Phase 1. What exists
-  today is the rule that no PII reaches the ledger, and a settlement contract
-  with nowhere to put any.
+- Not "compliance solved". Attestations gate settlement, which is real, but an
+  attestation is a named issuer's dated claim that they performed a check — the
+  ledger holds them accountable for having said so and cannot know whether they
+  looked. Screening is per-beneficiary rather than per-transaction, and a
+  salted hash is only as private as its salt.
+- Not "the oracle is trustworthy". Anyone holding its private key can sign any
+  rate and the chaincode will believe it. The key is generated on first use,
+  written 0600 and never committed, and it belongs in an HSM. The set of
+  organisations that may register one is compiled into the chaincode, so
+  changing it needs a redeploy — it belongs in the channel configuration.

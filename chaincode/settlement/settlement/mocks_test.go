@@ -1,6 +1,13 @@
 package settlement
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +17,7 @@ import (
 	"github.com/hyperledger/fabric-chaincode-go/v2/shim"
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
 	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/queryresult"
+	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -111,9 +119,64 @@ func (m *mockStub) SetEvent(name string, payload []byte) error {
 // bug the journal exists to make impossible.
 func (m *mockStub) GetTxID() string { return fmt.Sprintf("mock-tx-%d", m.txSeq) }
 
+// drunixUnpaginatedRangeLimit reproduces a real defect in the platform.
+//
+// On DRUNIX's SQL state database, the UNPAGINATED range scan delegates to the
+// paginated one with a hardcoded page size of 10, where upstream Fabric passes
+// 0 for "no limit". So GetStateByPartialCompositeKey silently returns at most
+// ten rows: no error, no truncation flag, just a short answer.
+//
+// The mock reproduces it on purpose. A mock that is kinder than the platform
+// is how a real defect passes CI — this contract has been bitten by exactly
+// that before (see T6.4). Any code that goes back to the unpaginated call will
+// now fail a test here rather than on a live ledger with sixteen accounts.
+const drunixUnpaginatedRangeLimit = 10
+
 // GetStateByPartialCompositeKey ranges over COMMITTED state in key order, as
-// Fabric does — this transaction's own writes are not visible to it either.
+// Fabric does — this transaction's own writes are not visible to it either —
+// and truncates at ten, as DRUNIX does.
 func (m *mockStub) GetStateByPartialCompositeKey(objectType string, keys []string) (shim.StateQueryIteratorInterface, error) {
+	matched := m.matchingKeys(objectType, keys)
+	if len(matched) > drunixUnpaginatedRangeLimit {
+		matched = matched[:drunixUnpaginatedRangeLimit]
+	}
+	return &mockIterator{stub: m, keys: matched}, nil
+}
+
+// GetStateByPartialCompositeKeyWithPagination honours the page size it is
+// given, which is what makes the workaround in iterate.go work.
+func (m *mockStub) GetStateByPartialCompositeKeyWithPagination(
+	objectType string, keys []string, pageSize int32, bookmark string,
+) (shim.StateQueryIteratorInterface, *peer.QueryResponseMetadata, error) {
+	matched := m.matchingKeys(objectType, keys)
+
+	// The bookmark is the key to resume AFTER, which is how Fabric's own
+	// bookmarks behave for a range query.
+	start := 0
+	if bookmark != "" {
+		start = sort.SearchStrings(matched, bookmark)
+	}
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := len(matched)
+	if pageSize > 0 && start+int(pageSize) < end {
+		end = start + int(pageSize)
+	}
+	page := matched[start:end]
+
+	next := ""
+	if end < len(matched) {
+		next = matched[end]
+	}
+	return &mockIterator{stub: m, keys: page},
+		&peer.QueryResponseMetadata{
+			FetchedRecordsCount: int32(len(page)),
+			Bookmark:            next,
+		}, nil
+}
+
+func (m *mockStub) matchingKeys(objectType string, keys []string) []string {
 	prefix := "\x00" + objectType + "\x00" + strings.Join(keys, "\x00")
 	matched := make([]string, 0, len(m.committed))
 	for k := range m.committed {
@@ -125,7 +188,7 @@ func (m *mockStub) GetStateByPartialCompositeKey(objectType string, keys []strin
 	// Fabric returns a range in key order; sorting keeps the mock faithful and
 	// the iteration deterministic.
 	sort.Strings(matched)
-	return &mockIterator{stub: m, keys: matched}, nil
+	return matched
 }
 
 type mockIterator struct {
@@ -216,17 +279,116 @@ func (m *mockContext) GetClientIdentity() cid.ClientIdentity { return m.identity
 // Test harness
 // ---------------------------------------------------------------------------
 
+// contractCtx is the transaction context, named short because the test files
+// pass it to a closure on nearly every line.
+type contractCtx = contractapi.TransactionContextInterface
+
 // ledger is one shared state map that several differently-signed contexts can
 // act on, which is how we simulate organisations transacting on one channel.
 type ledger struct {
 	t    *testing.T
 	stub *mockStub
 	sc   *SmartContract
+
+	// oracleKey signs the quotes create() mints. Generated per ledger so no
+	// test depends on a fixed key, and registered on the chain at setup
+	// because CreateTransfer now refuses an unsigned rate.
+	oracleKey *ecdsa.PrivateKey
+	oracleID  string
+
+	// autoAttest issues the beneficiary's KYC and sanctions attestations
+	// inside create(). Settlement is gated on them, so without this every test
+	// about expiry, access control or arithmetic would have to set up
+	// compliance it is not testing. Tests that ARE about the gate set this
+	// false and attest, or fail to attest, deliberately.
+	autoAttest bool
 }
 
 func newLedger(t *testing.T, now int64) *ledger {
 	t.Helper()
-	return &ledger{t: t, stub: newMockStub(now), sc: &SmartContract{}}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate oracle key: %v", err)
+	}
+	l := &ledger{
+		t: t, stub: newMockStub(now), sc: &SmartContract{},
+		oracleKey: key, oracleID: "oracle-test", autoAttest: true,
+	}
+	if err := l.registerOracle(l.oracleID, key); err != nil {
+		t.Fatalf("register oracle: %v", err)
+	}
+	return l
+}
+
+// quoteValiditySeconds is how long the harness's minted quotes last. Long
+// enough that no test trips over it accidentally, short enough to stay
+// realistic for an FX rate.
+const quoteValiditySeconds int64 = 300
+
+// attestorOrg is the only MSP allowed to issue attestations, and the only one
+// allowed to register an oracle key. Both are deliberately the same
+// organisation here: PlatformOrg is the platform node.
+const attestorOrg = "Org3MSP"
+
+func publicKeyPEM(t *testing.T, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func (l *ledger) registerOracle(oracleID string, key *ecdsa.PrivateKey) error {
+	l.t.Helper()
+	return l.invoke(attestorOrg, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.RegisterOracle(c, oracleID, publicKeyPEM(l.t, key))
+	})
+}
+
+// sign produces the signature an oracle would send with a quote.
+func (l *ledger) sign(q Quote, key *ecdsa.PrivateKey) string {
+	l.t.Helper()
+	digest := sha256.Sum256(QuoteBytes(q))
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		l.t.Fatalf("sign quote: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(sig)
+}
+
+// quoteFor builds a quote whose rate is exactly the transfer's two legs, so
+// the slippage check passes with no tolerance at all. A test that wants a
+// wrong rate builds its own.
+func (l *ledger) quoteFor(quoteID, senderCcy string, senderAmt uint64,
+	payoutCcy string, payoutAmt uint64, expires int64) Quote {
+	return Quote{
+		QuoteID: quoteID, OracleID: l.oracleID,
+		BaseCcy: senderCcy, QuoteCcy: payoutCcy,
+		RateNum: payoutAmt, RateDen: senderAmt,
+		ExpiresAt: expires, MaxSlippageBps: 0,
+	}
+}
+
+// attest issues both required attestations for a beneficiary.
+func (l *ledger) attest(subject string) error {
+	l.t.Helper()
+	for _, kind := range RequiredAttestations {
+		err := l.invoke(attestorOrg, func(c contractapi.TransactionContextInterface) error {
+			return l.sc.IssueAttestation(c, subject, kind, l.stub.now+86_400, "case-file")
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (l *ledger) revoke(subject, kind, reason string) error {
+	l.t.Helper()
+	return l.invoke(attestorOrg, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.RevokeAttestation(c, subject, kind, reason)
+	})
 }
 
 // as returns a transaction context signed by the given MSP ID, sharing the one
@@ -259,11 +421,51 @@ func (l *ledger) seed(org, ccy string, amount uint64) error {
 	})
 }
 
+// create mints a signed quote at the exact rate the two legs imply, attests
+// the beneficiary unless the test has turned that off, and creates the
+// transfer.
+//
+// Two details worth knowing before reading a test that uses it:
+//
+// The quote is dealt PER TRANSFER — the caller's quoteID is combined with the
+// transfer ID — because a quote is single use on the chain. That matches how a
+// dealt rate works in practice, and it means a test passing one quoteID for
+// several transfers still gets a valid quote for each instead of tripping a
+// rule it is not about. TestCreateTransfer_RefusesAReusedQuote covers the rule
+// itself, through createWith.
+//
+// The quote's own expiry is independent of the transfer's. They are different
+// clocks: a rate stops being true long before a transfer stops being settleable,
+// and tying them together made a test about transfer expiry fail on quote
+// expiry instead.
 func (l *ledger) create(org, transferID string, senderAmt uint64, senderCcy string,
-	payoutAmt uint64, payoutCcy, quote string, expires int64, payoutOrg, payee string) error {
+	payoutAmt uint64, payoutCcy, quoteID string, expires int64, payoutOrg, payee string) error {
+	l.t.Helper()
+	if l.autoAttest && !isReservedAccount(payee) && payee != "" {
+		// Best effort: a malformed payee is the point of some tests, and the
+		// attestation failing there must not mask the error being tested.
+		_ = l.attest(payee)
+	}
+	q := l.quoteFor(quoteID+":"+transferID, senderCcy, senderAmt,
+		payoutCcy, payoutAmt, l.stub.now+quoteValiditySeconds)
+	sig := l.sign(q, l.oracleKey)
 	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
 		return l.sc.CreateTransfer(c, transferID, senderAmt, senderCcy,
-			payoutAmt, payoutCcy, quote, expires, payoutOrg, payee)
+			payoutAmt, payoutCcy, q, sig, expires, payoutOrg, payee)
+	})
+}
+
+// createWith creates a transfer with a caller-built quote and signature, for
+// tests about the quote itself.
+func (l *ledger) createWith(org, transferID string, senderAmt uint64, senderCcy string,
+	payoutAmt uint64, payoutCcy string, q Quote, sig string, expires int64, payoutOrg, payee string) error {
+	l.t.Helper()
+	if l.autoAttest && payee != "" {
+		_ = l.attest(payee)
+	}
+	return l.invoke(org, func(c contractapi.TransactionContextInterface) error {
+		return l.sc.CreateTransfer(c, transferID, senderAmt, senderCcy,
+			payoutAmt, payoutCcy, q, sig, expires, payoutOrg, payee)
 	})
 }
 

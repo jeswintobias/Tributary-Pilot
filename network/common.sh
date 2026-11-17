@@ -115,6 +115,18 @@ ensure_binaries() {
 
 # Put the freshly built binaries and upstream's config on the path, exactly as
 # upstream's own README instructs.
+# create_transfer_args builds the full `-c` payload for CreateTransfer,
+# including a freshly signed FX quote.
+#
+# The chaincode will not create a transfer at an unsigned rate, and the quote
+# is a JSON object nested inside the JSON Args array — which is miserable to
+# assemble in shell and fails in a way that blames the signature. So it is
+# built in node, where JSON.stringify gets it right by construction. See
+# network/tools/create-transfer-args.js for the flags.
+create_transfer_args() {
+  node "${NETWORK_DIR}/tools/create-transfer-args.js" "$@"
+}
+
 export_fabric_env() {
   export PATH="${DRUNIX_DIR}/build/bin:${PATH}"
   # Upstream's README says "../config" relative to test-network, which is

@@ -292,7 +292,10 @@ func TestCreateTransfer_RejectsOversizedAndMalformedInput(t *testing.T) {
 	}{
 		{"oversized transferID", "transferID is 300 bytes",
 			long, aed, inr, quoteID, payoutOrg, payeeRef},
-		{"oversized quoteID", "quoteID is 300 bytes",
+		// create() appends the transfer ID when dealing the quote, so the
+		// reported length is the composed one. The check being exercised is
+		// still the cap itself.
+		{"oversized quoteID", "the maximum is 64",
 			"ok-1", aed, inr, long, payoutOrg, payeeRef},
 		{"oversized payeeRef", "payoutPayeeRef is 300 bytes",
 			"ok-2", aed, inr, quoteID, payoutOrg, long},

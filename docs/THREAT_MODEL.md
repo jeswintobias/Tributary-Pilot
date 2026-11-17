@@ -74,6 +74,9 @@ should have.
 
 ## T5 — Market and oracle
 
+> Superseded in part by **T10.1**, which covers signed quotes as built. What
+> remains below is the wider market risk the signing mechanism does not address.
+
 | # | Threat | Control | Test |
 |---|---|---|---|
 | T5.1 | A forged FX quote moves value to an attacker | Quotes are signed by the oracle, carry an expiry and a slippage bound, and are referenced by `quoteID` on the transfer | **Planned** — Phase 1 `fx-oracle` |
@@ -124,6 +127,91 @@ but not yet moved.
    name both parties and amounts in the clear, so the corridor's bilateral flow
    is readable by anyone on the channel. Private data collections would fix it;
    no one has done that work.
+
+## T10 — FX, compliance, policy and vouchers
+
+The controls layer. Each of these closes a hole that was open and real until
+it landed; the detail and the reasoning are in [CONTROLS.md](CONTROLS.md).
+
+### T10.1 — The rate
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T10.1.1 | The sender names a rate nobody quoted | A transfer may only be created against a quote signed by a registered oracle | `TestQuote_UnsignedRateIsRefused`, `TestQuote_ForgedSignatureIsRefused`, and the live run |
+| T10.1.2 | Yesterday's favourable rate is used today | The quote carries an expiry, checked against the transaction timestamp | `TestQuote_ExpiredRateIsRefused`, and the live run |
+| T10.1.3 | A genuine signed quote is attached to legs that bear no relation to it | The payout leg must sit within `maxSlippageBps` of `senderAmount × rateNum ÷ rateDen` | `TestQuote_LegsThatDoNotMatchTheRateAreRefused`, and the live run |
+| T10.1.4 | A signature over one quote verifies another | Fields are length-prefixed with a domain separator, so two quotes cannot serialise identically | `TestQuoteBytes_FieldsCannotBleedIntoEachOther` |
+| T10.1.5 | The Go and JavaScript encodings drift apart, so every quote is rejected for a reason nobody can diagnose | A signed vector produced by the oracle service is re-derived and verified by the chaincode's own implementation | `TestQuote_MatchesTheOracleServiceEncoding`; verified to fail on a dropped length prefix and on a changed domain separator |
+| T10.1.6 | A favourable quote is spent repeatedly as the market moves | A quote is single use, keyed by quote ID | `TestCreateTransfer_RefusesAReusedQuote` |
+| T10.1.7 | The rate check overflows and silently passes anything | `mulDiv` keeps the intermediate product in 128 bits | `TestMulDiv`, including a product beyond 2^64 |
+| T10.1.8 | A quote for another corridor is replayed | The quote's currency pair must match the transfer's | `TestQuote_WrongCurrencyPairIsRefused` |
+| T10.1.9 | Anyone installs a trusted signing key | Only `OracleMSPs` may register, and a key cannot be silently replaced | `TestRegisterOracle_OnlyAnApprovedOrgMay`, and the live run |
+| T10.1.10 | The rate is altered between prepare and commit | The proof hash covers the rate, not just the quote ID | `TestProofHash_CoversTheRate` |
+
+### T10.2 — The beneficiary
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T10.2.1 | Value settles to somebody nobody identified or screened | Live KYC and sanctions attestations are required before the payout leg moves | `TestPrepare_RefusedWithoutAttestations`, and the live run |
+| T10.2.2 | A sanctions hit lands after funds are locked and the payout goes through anyway | Attestations are checked at Prepare **and again at Commit** | `TestCommit_RefusedWhenSanctionsLandMidSettlement`; verified to fail when the Commit check is removed |
+| T10.2.3 | An attestation expires mid-settlement and is still honoured | The same check uses the transaction timestamp at Commit | `TestCommit_RefusedWhenTheAttestationExpiresMidSettlement` |
+| T10.2.4 | A party clears its own beneficiary | Only `AttestorMSPs` may issue; the issuer is the signing MSP, never an argument | `TestIssueAttestation_OnlyAnApprovedAttestorMay`, and the live run |
+| T10.2.5 | One attestor invalidates another's work | Only the issuer may revoke | `TestRevokeAttestation_OnlyTheIssuerMay` |
+| T10.2.6 | A sanctions hit is undone by writing a fresh attestation over it | Re-issuing over a revocation is refused outright | `TestIssueAttestation_WillNotPaperOverARevocation` |
+| T10.2.7 | A check is performed once and trusted for ever | Validity is capped at a year | `TestIssueAttestation_RefusesAnUnboundedValidity` |
+| T10.2.8 | A revocation strands the counterparty's locked funds | Refunds are not gated on compliance: value returning to its owner is not a payout | `TestAbort_RefundsEvenAfterRevocation` |
+| T10.2.9 | Personal data reaches the ledger | The subject is the same salted hash the payout leg already carries; the struct has nowhere to put a name | `TestAttestation_NoPersonalDataReachesTheLedger` |
+
+### T10.3 — The limits
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T10.3.1 | One compromised key raises every limit in the system | A policy change needs two **distinct** organisations; the proposer may not approve | `TestPolicy_ProposerCannotApproveItsOwnChange`; verified to fail when the check is removed |
+| T10.3.2 | An approver is made to approve something other than what was proposed | The proposal is keyed by the hash of its own contents | `TestPolicy_ProposalIDIsTheHashOfItsContents` |
+| T10.3.3 | Endorsing peers compute different proposal IDs, so nothing is ever approvable | Limit maps and member lists are sorted before hashing | `TestPolicy_HashIsDeterministicAcrossMapOrder` |
+| T10.3.4 | A transfer far outside what the channel agreed to | Per-currency caps on transfers and obligations, checked at creation | `TestPolicy_CapsASingleTransfer`, `TestPolicy_CapsANettingObligation` |
+| T10.3.5 | An organisation nobody approved becomes a counterparty | `ApprovedMembers`, when set, restricts who may be a party | `TestPolicy_RestrictsWhoMayBeAParty` |
+| T10.3.6 | A transfer with a window too short for the counterparty to act | `MinSettlementWindowSeconds` floors it | `TestPolicy_FloorsTheSettlementWindow` |
+| T10.3.7 | Deploying a policy mechanism bricks a working channel | An unset policy imposes nothing | `TestPolicy_UnsetImposesNothing` |
+
+### T10.4 — Where the money goes afterwards
+
+| # | Threat | Control | Test |
+|---|---|---|---|
+| T10.4.1 | Money said to be for one purpose is spent on another | Value leaves the beneficiary's balance at issue and can only reach the named recipients | `TestVoucher_BindingMovesValueOutOfTheBeneficiarysBalance` |
+| T10.4.2 | A voucher binds part of a payout and leaves the rest unaccounted for | The splits must total the payout leg exactly | `TestVoucher_MustAccountForTheWholePayoutLeg`; verified to fail when the check is removed |
+| T10.4.3 | A voucher routes value to somebody who could not have received it directly | Every recipient is screened at issue | `TestVoucher_EveryRecipientMustBeScreened` |
+| T10.4.4 | A recipient sanctioned after issue is still paid | Screened again at redemption, because that is when the money moves | `TestVoucher_RedemptionIsRefusedAfterARevocation`; verified to fail when the check is removed |
+| T10.4.5 | A split is claimed twice | Each split records its own redemption | `TestVoucher_ASplitCannotBeRedeemedTwice` |
+| T10.4.6 | Value is bound for ever because a recipient never claims | Unredeemed value returns to the beneficiary after expiry | `TestVoucher_UnredeemedValueGoesBackOnExpiry` |
+| T10.4.7 | A refund is taken before a recipient has had the chance to claim | Refunds are refused before expiry | `TestVoucher_CannotBeRefundedBeforeExpiry` |
+| T10.4.8 | A voucher account is named as a recipient, to launder value between vouchers | `voucher:` joins `issuance:` and `escrow:` as a reserved prefix | `TestVoucher_RefusesAReservedRecipient` |
+
+### Still open on the controls
+
+1. **Every allow-list is a compile-time constant.** `OracleMSPs`,
+   `AttestorMSPs` and `PolicyAdminMSPs` live in the chaincode, so changing any
+   of them needs a redeploy. They belong in the channel configuration, where a
+   change takes the ordinary config-update signatures. This is the weakest part
+   of the design.
+2. **The oracle's key is a file on disk.** Anyone holding it can sign any rate
+   and the chaincode will believe it. Generated on first use, written `0600`,
+   never committed — and it belongs in an HSM.
+3. **Nothing caps slippage.** `maxSlippageBps` is the oracle's own statement so
+   a client cannot widen it, but an oracle could quote a tolerance so wide it
+   means nothing. A policy cap is obvious work and is not done.
+4. **Attestations are per-beneficiary, not per-transaction.** Somebody cleared
+   once is cleared until expiry or revocation. Per-transaction screening is a
+   different and much heavier model.
+5. **A voucher's purposes are free text.** `TUITION` is recorded, not enforced.
+   The chaincode cannot tell whether the recipient is really a college.
+6. **Policy has no velocity limits.** Per-transfer caps only. A daily
+   cumulative limit needs a windowed counter, which is a shared key and would
+   need the treatment the netting path got.
+7. **A salted hash is only as private as its salt.** If it leaks, the hash of a
+   known name can be recomputed and matched, and the ledger then reveals which
+   beneficiaries transacted. The salt lives in the compliance service and never
+   on chain.
 
 ## T9 — The projector, the queue and the payout worker
 

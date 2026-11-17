@@ -1,0 +1,50 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Funding
+OK: balances seeded
+OK: this run's beneficiary sha256:compliance-payee-1794931040 is screened
+
+── A rate nobody signed
+quote q-TP-FORGE-1794931040-1794931073654 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR [SIGNED BY A KEY THE CHAIN DOES NOT KNOW]
+OK: a forged quote is refused
+
+── A rate that was true yesterday
+quote q-TP-STALE-1794931040-1794931073782 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+OK: an expired quote is refused
+
+── A genuine rate, attached to legs that do not match it
+quote q-TP-MISMATCH-1794931040-1794931073896 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 3000000 INR
+OK: legs that contradict the quoted rate are refused
+
+── Within the tolerance the oracle stated
+quote q-TP-SLIP-1794931040-1794931074008 at 227431/10000 (25bps): 220000 AED -> implied 5003482, using 5000979 INR
+OK: a payout inside the stated tolerance is accepted
+
+── A beneficiary nobody screened
+quote q-TP-UNSCREENED-1794931040-1794931082142 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+OK: the transfer was captured: compliance is checked at prepare, not capture
+OK: preparing for an unscreened beneficiary is refused
+CheckBeneficiary says why:
+{"subjectHash":"sha256:unscreened-1794931040","clear":false,"reason":"not payable: [KYC SANCTIONS] missing, expired or revoked","have":[],"missing":["KYC","SANCTIONS"]}
+OK: no funds were locked for an unpayable beneficiary
+
+── A sanctions hit landing mid-settlement
+quote q-TP-MIDHIT-1794931040-1794931098720 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+OK: TP-MIDHIT-1794931040 is PREPARED, funds locked
+beneficiary holds 0 INR before the attempt
+the screening provider revokes the sanctions attestation...
+OK: committing after a revocation is refused
+OK: the beneficiary received nothing (still 0 INR)
+
+── The refund still works
+waiting for the transfer to expire so it can be aborted...
+OK: the locked funds were refunded despite the revocation
+OK: escrow is empty: the refund completed
+
+── Conservation across every account
+  AED sums to 0   BALANCED
+  INR sums to 0   BALANCED
+
+D_EXIT=0

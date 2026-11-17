@@ -105,7 +105,8 @@ EXPIRY=$(( $(date +%s) + 900 ))
 
 invoke 1 '{"Args":["SeedBalance","AED","100000000"]}'
 invoke 2 '{"Args":["SeedBalance","INR","1000000000"]}'
-invoke 1 "{\"Args\":[\"CreateTransfer\",\"${TID}\",\"220000\",\"AED\",\"3000000\",\"INR\",\"quote-${STAMP}\",\"${EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 1 "$(create_transfer_args --id "${TID}" --sender 220000 --sender-ccy AED \
+  --payout-ccy INR --expires "${EXPIRY}" --payout-org Org2MSP --payee "${PAYEE}")"
 invoke 2 "{\"Args\":[\"Accept\",\"${TID}\"]}"
 invoke 1 "{\"Args\":[\"Prepare\",\"${TID}\"]}"
 

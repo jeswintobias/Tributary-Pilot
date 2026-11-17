@@ -121,6 +121,21 @@ input,select{font:inherit;font-size:.85rem;padding:.4rem .5rem;border:1px solid 
 .ev .e{display:flex;gap:.5rem;align-items:baseline;font-family:var(--mono);font-size:.74rem;padding:.3rem .45rem;background:var(--code);border-radius:2px}
 .ev .e b{color:var(--accent);font-weight:600}
 .empty{color:var(--ink-soft);font-size:.85rem}
+/* FX and compliance */
+.fx{display:flex;flex-direction:column;gap:.6rem}
+.fxrate{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap}
+.fxrate .big{font-family:var(--mono);font-size:1.05rem;font-weight:600}
+.fxrate .sub{font-family:var(--mono);font-size:.72rem;color:var(--ink-soft)}
+.simulated{font-family:var(--mono);font-size:.62rem;letter-spacing:.07em;text-transform:uppercase;
+  padding:.15rem .4rem;border-radius:2px;background:var(--pending-soft);color:var(--pending)}
+.screen{display:flex;flex-direction:column;gap:.4rem}
+.screen .row{display:flex;gap:.4rem;align-items:center}
+.screen input{flex:1;min-width:0}
+.att{font-family:var(--mono);font-size:.72rem;padding:.35rem .5rem;border-radius:2px}
+.att.clear{background:var(--verified-soft);color:var(--verified)}
+.att.blocked{background:var(--refused-soft);color:var(--refused)}
+.att.unknown{background:var(--code);color:var(--ink-soft)}
+
 /* Pipeline */
 .pipe{display:flex;flex-direction:column;gap:.7rem}
 .stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:.4rem}
@@ -239,6 +254,14 @@ footer .wrap{padding-block:1.2rem;color:var(--ink-soft);font-size:.78rem;border-
             <button class="primary" type="submit">Capture transfer</button>
           </form>
         </div>
+      </section>
+
+      <section class="card">
+        <div class="hd">
+          <h2>Rate &amp; screening</h2>
+          <span class="eyebrow" id="oracleid">oracle</span>
+        </div>
+        <div class="bd" id="fx"><p class="empty">Asking the oracle…</p></div>
       </section>
 
       <section class="card">
@@ -682,9 +705,112 @@ async function refreshPipeline() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Rate and screening
+// ---------------------------------------------------------------------------
+// Two things the ledger now refuses without, shown before anyone tries:
+// a rate an oracle signed, and a beneficiary somebody screened. The gateway
+// never holds the oracle's key \u2014 it asks the oracle service, which is a
+// separate process for exactly that reason.
+
+// The last beneficiary check, kept so the eight-second refresh does not wipe
+// an answer the user just asked for. The card is re-rendered wholesale on
+// every poll, and without this the result vanished a moment after appearing.
+let lastCheck = null;
+
+function renderFx(rate, oracle) {
+  $('#oracleid').textContent = oracle?.oracleID ? esc(oracle.oracleID) : 'oracle unavailable';
+
+  const pair = rate ? `${esc(rate.baseCcy)}\u2192${esc(rate.quoteCcy)}` : '';
+  $('#fx').innerHTML = `
+    <div class="fx">
+      ${rate ? `
+      <div class="fxrate">
+        <span class="big">1 ${esc(rate.baseCcy)} = ${(rate.rateNum / rate.rateDen).toFixed(4)} ${esc(rate.quoteCcy)}</span>
+        ${rate.simulated ? '<span class="simulated">simulated</span>' : ''}
+      </div>
+      <div class="fxrate">
+        <span class="sub">${esc(rate.rateNum)}/${esc(rate.rateDen)} as an exact rational \u00b7 never a decimal</span>
+      </div>
+      <div class="fxrate">
+        <span class="sub">${esc(rate.amount)} ${esc(rate.baseCcy)} \u2192 <b>${esc(rate.expectedPayout)}</b> ${esc(rate.quoteCcy)}</span>
+      </div>
+      <p class="empty" style="margin:0;font-size:.74rem">
+        Every transfer is created against a fresh quote, signed by the oracle and single use.
+        A forged, stale or mismatched rate is refused by the chaincode.
+      </p>
+      ` : `<p class="empty">No rate: the FX oracle is not reachable. A transfer cannot be
+             created without a signed rate, which is the correct failure \u2014 settling at an
+             unverified rate would be worse than not settling.</p>`}
+
+      <div class="screen">
+        <span class="eyebrow">Check a beneficiary</span>
+        <div class="row">
+          <input id="benRef" placeholder="sha256:\u2026 salted reference" class="mono">
+          <button class="ghost" id="benGo" type="button">Check</button>
+        </div>
+        <div id="benOut"></div>
+      </div>
+    </div>`;
+
+  // Put back whatever was last checked, and what it said.
+  if (lastCheck) {
+    const field0 = $('#benRef');
+    if (field0) field0.value = lastCheck.ref;
+    const out0 = $('#benOut');
+    if (out0) out0.innerHTML = lastCheck.html;
+  }
+
+  const go = $('#benGo');
+  if (go) go.addEventListener('click', checkBeneficiary);
+  const field = $('#benRef');
+  if (field) field.addEventListener('keydown', (e) => { if (e.key === 'Enter') checkBeneficiary(); });
+}
+
+async function checkBeneficiary() {
+  const ref = $('#benRef')?.value?.trim();
+  if (!ref) return;
+  const out = $('#benOut');
+  out.innerHTML = '<p class="empty">Asking the ledger\u2026</p>';
+  let html;
+  try {
+    const s = await api(`/api/beneficiary?ref=${encodeURIComponent(ref)}`);
+    html = `<p class="att ${s.clear ? 'clear' : 'blocked'}">${esc(s.reason)}</p>`
+      + (s.have?.length
+        ? `<p class="empty" style="font-size:.72rem;margin:.3rem 0 0">${s.have.map((a) =>
+            `${esc(a.kind)} by ${esc(a.issuer)}${a.revoked ? ' \u2014 REVOKED' : ''}`).join(' \u00b7 ')}</p>`
+        : '');
+  } catch (err) {
+    html = `<p class="att unknown">${esc(err.message)}</p>`;
+  }
+  lastCheck = { ref, html };
+  // The card may have been re-rendered while the ledger was answering, so
+  // write to whatever element is there now rather than the one captured above.
+  const current = $('#benOut');
+  if (current) current.innerHTML = html;
+}
+
+async function refreshFx() {
+  const f = $('#create');
+  const base = (f?.senderCcy?.value || 'AED').toUpperCase();
+  const quote = (f?.payoutCcy?.value || 'INR').toUpperCase();
+  const amount = (f?.senderLegAmount?.value || '220000').replace(/\D/g, '') || '220000';
+  let rate = null;
+  let oracle = null;
+  try {
+    oracle = await api('/api/oracle');
+  } catch { /* shown as unavailable */ }
+  try {
+    rate = await api(`/api/rate?base=${base}&quote=${quote}&amount=${amount}`);
+  } catch { /* shown as unavailable */ }
+  renderFx(rate, oracle);
+}
+
 async function refresh() {
   refreshNetting();
   refreshPipeline();
+  refreshFx();
   try {
     const s = await api('/api/state');
     renderTransfers(s.transfers);
@@ -704,8 +830,14 @@ $('#fill').addEventListener('click', () => {
   f.transferID.value = `TP-UAE-IN-${stamp}`;
   f.senderLegAmount.value = '220000';
   f.senderCcy.value = 'AED';
-  f.payoutLegAmount.value = '3000000';
   f.payoutCcy.value = 'INR';
+  // Filled from the oracle's current quote rather than typed: the chaincode
+  // checks the two legs against the signed rate, so a guessed figure is a
+  // refusal waiting to happen. Editing it afterwards is a good way to watch
+  // that refusal.
+  api(`/api/rate?base=AED&quote=INR&amount=220000`)
+    .then((r) => { f.payoutLegAmount.value = r.expectedPayout; })
+    .catch(() => { f.payoutLegAmount.value = ''; });
   f.payoutPayeeRef.value = 'sha256:collegefeespayeeref0000000000000000';
   f.quoteID.value = `quote-${stamp}`;
   f.expiresIn.value = '900';

@@ -1,0 +1,16 @@
+{
+  "name": "tributary-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FX rate oracle: signs quotes the settlement chaincode verifies",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "mint": "node src/mint.js",
+    "pubkey": "node src/pubkey.js",
+    "vector": "node src/make-vector.js",
+    "test": "node --test"
+  }
+}

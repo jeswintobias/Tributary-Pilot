@@ -22,7 +22,7 @@ STAMP="$(date +%s)"
 # A salted hash of the beneficiary reference, computed off-chain. No personally
 # identifying information reaches the ledger. Defined here because every section
 # below uses it.
-PAYEE="sha256:collegefeespayeeref0000000000000000"
+PAYEE="sha256:collegefees-${STAMP}"
 
 configure_platform
 require_tools
@@ -97,12 +97,54 @@ query_raw() {
   peer chaincode query -C "${CHANNEL_NAME}" -n "${CC_NAME}" -c "$1" 2>/dev/null
 }
 
+
+# attest issues a beneficiary's KYC and sanctions attestations, signed by
+# PlatformOrg.
+#
+# Settlement is gated on both, so a demo that pays somebody has to screen them
+# first. PlatformOrg runs no peer of its own: it signs with its own identity
+# and borrows Org1's Lite Peer as transport.
+#
+# The references are stamped per run because a revocation is permanent for a
+# subject — the contract refuses to re-issue over one, so a sanctions hit
+# cannot be papered over. That makes any shared reference single-use.
+ORG3_ADMIN_MSP="${TRIBUTARY_HOME}/platformorg/organizations/peerOrganizations/org3.example.com/users/Admin@org3.example.com/msp"
+
+attest() {
+  local subject="$1"
+  local expires=$(( $(date +%s) + 300 * 24 * 60 * 60 ))
+  local kind args
+  if [ ! -d "${ORG3_ADMIN_MSP}" ]; then
+    die "PlatformOrg's admin MSP is missing; run ./network/add-platform-org.sh first"
+  fi
+  for kind in KYC SANCTIONS; do
+    args="$(node -e '
+const [, subject, kind, expires] = process.argv;
+process.stdout.write(JSON.stringify({
+  Args: ["IssueAttestation", subject, kind, expires, "case-file-demo"],
+}));
+' -- "${subject}" "${kind}" "${expires}")"
+    (
+      export CORE_PEER_LOCALMSPID="Org3MSP"
+      export CORE_PEER_MSPCONFIGPATH="${ORG3_ADMIN_MSP}"
+      export CORE_PEER_ADDRESS="localhost:7051"
+      export CORE_PEER_TLS_ROOTCERT_FILE="${PEER0_ORG1_CA}"
+      export CORE_PEER_TLS_ENABLED=true
+      peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
+        --tls --cafile "${ORDERER_CA}" -C "${CHANNEL_NAME}" -n "${CC_NAME}" \
+        "${BOTH_PEERS[@]}" -c "${args}" >/dev/null 2>&1 || true
+    )
+  done
+  sleep "${COMMIT_WAIT}"
+}
+
 # ---------------------------------------------------------------------------
 step "Seeding balances (Phase 0 scaffolding; the token contract replaces this)"
 # ---------------------------------------------------------------------------
 # SenderOrg funds itself in AED minor units (fils); PayoutBankOrg in INR paise.
 invoke 1 '{"Args":["SeedBalance","AED","100000000"]}'
 invoke 2 '{"Args":["SeedBalance","INR","1000000000"]}'
+attest "${PAYEE}"
 
 echo "SenderOrg AED:"     && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'
 echo "PayoutBankOrg INR:" && query 2 '{"Args":["GetBalance","Org2MSP","INR"]}'
@@ -114,7 +156,8 @@ step "T2.5 — the sender alone cannot lock the payout bank's funds"
 # sending org cannot tie up its liquidity.
 GRIEF="TP-GRIEF-${STAMP}"
 GRIEF_EXPIRY=$(( $(date +%s) + 900 ))
-invoke 1 "{\"Args\":[\"CreateTransfer\",\"${GRIEF}\",\"100\",\"AED\",\"3000000\",\"INR\",\"quote-grief-${STAMP}\",\"${GRIEF_EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 1 "$(create_transfer_args --id "${GRIEF}" --sender 100 --sender-ccy AED \
+  --payout-ccy INR --expires "${GRIEF_EXPIRY}" --payout-org Org2MSP --payee "${PAYEE}")"
 setGlobals 1 "${LITE_PEER}"
 # Capture the output rather than piping it: under `set -o pipefail` a pipeline
 # takes peer's non-zero exit status even when grep matches, so `if ... | grep`
@@ -147,7 +190,8 @@ HAPPY="TP-HAPPY-${STAMP}"
 EXPIRY=$(( $(date +%s) + 900 ))
 
 # 2,200 AED = 220000 fils. 30,000 INR = 3000000 paise.
-invoke 1 "{\"Args\":[\"CreateTransfer\",\"${HAPPY}\",\"220000\",\"AED\",\"3000000\",\"INR\",\"quote-${STAMP}\",\"${EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 1 "$(create_transfer_args --id "${HAPPY}" --sender 220000 --sender-ccy AED \
+  --payout-ccy INR --expires "${EXPIRY}" --payout-org Org2MSP --payee "${PAYEE}")"
 echo "after CreateTransfer:" && query 1 "{\"Args\":[\"GetTransfer\",\"${HAPPY}\"]}"
 
 # The payout bank agrees to the terms before any of its funds can be locked.
@@ -200,7 +244,8 @@ step "ABORT PATH — a prepared transfer that expires is refunded in full"
 ABORT="TP-ABORT-${STAMP}"
 SHORT_EXPIRY=$(( $(date +%s) + 120 ))
 
-invoke 1 "{\"Args\":[\"CreateTransfer\",\"${ABORT}\",\"110000\",\"AED\",\"1500000\",\"INR\",\"quote-abort-${STAMP}\",\"${SHORT_EXPIRY}\",\"Org2MSP\",\"${PAYEE}\"]}"
+invoke 1 "$(create_transfer_args --id "${ABORT}" --sender 110000 --sender-ccy AED \
+  --payout-ccy INR --expires "${SHORT_EXPIRY}" --payout-org Org2MSP --payee "${PAYEE}")"
 invoke 2 "{\"Args\":[\"Accept\",\"${ABORT}\"]}"
 invoke 1 "{\"Args\":[\"Prepare\",\"${ABORT}\"]}"
 echo "escrow holds the locked legs while PREPARED:" && query 1 '{"Args":["GetBalance","Org1MSP","AED"]}'

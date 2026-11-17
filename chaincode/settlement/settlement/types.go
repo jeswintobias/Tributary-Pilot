@@ -56,6 +56,13 @@ const (
 	EventWindowSettled       = "WindowSettled"
 )
 
+// Compliance events. The projector turns these into a view an auditor reads
+// without querying a peer per beneficiary.
+const (
+	EventAttestationIssued  = "AttestationIssued"
+	EventAttestationRevoked = "AttestationRevoked"
+)
+
 // Transfer is one remittance with two legs that must settle together or not at
 // all.
 //
@@ -82,8 +89,12 @@ type Transfer struct {
 	PayoutCcy       string `json:"payoutCcy"`
 	PayoutPayeeRef  string `json:"payoutPayeeRef"` // salted hash of the payee, never PII
 
-	QuoteID   string `json:"quoteID"`
-	ExpiresAt int64  `json:"expiresAt"` // Unix seconds; bounded by the FX quote's own expiry
+	QuoteID string `json:"quoteID"`
+	// Quote is the signed rate this transfer was created at, kept in full so
+	// the terms can be re-checked by anyone reading the ledger rather than
+	// taken on trust from an ID.
+	Quote     Quote `json:"quote"`
+	ExpiresAt int64 `json:"expiresAt"` // Unix seconds; bounded by the FX quote's own expiry
 
 	State string `json:"state"`
 
@@ -117,3 +128,16 @@ type stateChangeEvent struct {
 	ProofHash       string `json:"proofHash"`
 	At              int64  `json:"at"`
 }
+
+// EventPolicyActivated fires when a policy change clears maker-checker. The
+// projector turns it into an audit trail of who proposed and who approved
+// every limit the system has ever operated under.
+const EventPolicyActivated = "PolicyActivated"
+
+// Voucher events, for the projector and the beneficiary's own view of where
+// their money is bound.
+const (
+	EventVoucherIssued   = "VoucherIssued"
+	EventVoucherRedeemed = "VoucherRedeemed"
+	EventVoucherRefunded = "VoucherRefunded"
+)
