@@ -1,0 +1,46 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Setting up
+firing 6 transactions at once in each round
+
+── Round A — two-phase commit, all from one payer
+quote q-TP-CON-1794936020-1-1794936071780 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+quote q-TP-CON-1794936020-2-1794936092021 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+quote q-TP-CON-1794936020-3-1794936112274 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+quote q-TP-CON-1794936020-4-1794936132499 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+quote q-TP-CON-1794936020-5-1794936152717 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+quote q-TP-CON-1794936020-6-1794936172918 at 227431/10000 (0bps): 100000 AED -> implied 2274310, using 2274310 INR
+6 transfers accepted; firing every Prepare at once
+Round A: 1 of 6 prepares survived
+
+── Round B — netting, all from one institution
+Round B: 1 of 6 submissions survived
+
+── Round C — netting, spread across institutions
+Round C: 2 of 6 submissions survived
+
+── What this says
+  A  two-phase commit, one payer                 1 of 6
+  B  netting, one institution                    1 of 6
+  C  netting, across institutions                2 of 6
+
+  No timings are reported. Every container here runs emulated, so a
+  throughput figure from this machine would describe qemu rather than
+  the ledger. Survival under contention does not depend on how fast the
+  hardware is — it depends on which keys the transactions touch.
+  Predicted by the design: A and B touch one key each, so 1 should survive.
+  C is spread over 2 institutions writing separate keys, so 2 should.
+
+OK: contending on a single key let at most one transaction through, in both rounds
+OK: spreading over 2 institutions let exactly 2 through, as the design predicts
+
+  Note the shape of the result rather than its size. Throughput here is
+  whatever qemu allows; what the design claims is that concurrency scales
+  with the number of institutions, and that is what these three numbers
+  show. Six transactions across two institutions still only gets two
+  through, which is the limit the README states: parallelism is ACROSS
+  institutions, not within one.
+
+M_EXIT=0
