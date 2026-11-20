@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.004.001.09">
+  <PmtRtr>
+    <GrpHdr>
+      <MsgId>TRB-RTN-TP-ABORT-1795148059</MsgId>
+      <CreDtTm>2026-11-20T04:17:38Z</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+      </SttlmInf>
+    </GrpHdr>
+    <TxInf>
+      <RtrId>TRB-RTN-TP-ABORT-1795148059</RtrId>
+      <OrgnlEndToEndId>TP-ABORT-1795148059</OrgnlEndToEndId>
+      <OrgnlTxId>TP-ABORT-1795148059</OrgnlTxId>
+      <OrgnlUETR>ad3ce8f3-3905-4109-8b0c-1edb4c14944c</OrgnlUETR>
+      <OrgnlIntrBkSttlmAmt Ccy="INR">25017.41</OrgnlIntrBkSttlmAmt>
+      <RtrdIntrBkSttlmAmt Ccy="INR">25017.41</RtrdIntrBkSttlmAmt>
+      <RtrRsnInf>
+        <Rsn>
+          <Cd>NARR</Cd>
+        </Rsn>
+        <AddtlInf>settlement window expired</AddtlInf>
+      </RtrRsnInf>
+    </TxInf>
+  </PmtRtr>
+</Document>

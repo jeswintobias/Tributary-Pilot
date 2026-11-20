@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10">
+  <FIToFIPmtStsRpt>
+    <GrpHdr>
+      <MsgId>TRB-STS-TP-HAPPY-1795148059-ACSC</MsgId>
+      <CreDtTm>2026-11-20T04:15:25Z</CreDtTm>
+    </GrpHdr>
+    <TxInfAndSts>
+      <OrgnlEndToEndId>TP-HAPPY-1795148059</OrgnlEndToEndId>
+      <OrgnlTxId>TP-HAPPY-1795148059</OrgnlTxId>
+      <OrgnlUETR>e823054f-2bac-4499-a400-2a914ac53f10</OrgnlUETR>
+      <TxSts>ACSC</TxSts>
+      <InstgAgt>
+        <FinInstnId>
+          <Othr>
+            <Id>Org1MSP</Id>
+          </Othr>
+        </FinInstnId>
+      </InstgAgt>
+      <InstdAgt>
+        <FinInstnId>
+          <Othr>
+            <Id>Org2MSP</Id>
+          </Othr>
+        </FinInstnId>
+      </InstdAgt>
+    </TxInfAndSts>
+  </FIToFIPmtStsRpt>
+</Document>

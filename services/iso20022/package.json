@@ -1,0 +1,13 @@
+{
+  "name": "tributary-iso20022",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Maps ledger settlement state to ISO 20022 payment messages",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test",
+    "emit": "node src/cli.js"
+  }
+}
