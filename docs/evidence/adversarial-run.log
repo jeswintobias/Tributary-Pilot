@@ -1,0 +1,69 @@
+[tributary] Apple silicon detected: forcing DOCKER_DEFAULT_PLATFORM=linux/amd64.
+[tributary] DRUNIX ships amd64 images only, so containers run emulated and are slow.
+Using organization 2
+
+── Setting up: funds, screened beneficiaries, one settled transfer
+funded: 724678500 AED at the sender, 21740355000 INR seeded to the payout bank
+sha256:adversarial-payee-1794935830 is screened
+quote q-TP-ADV-LOCKED-1794935830-1794935880045 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+TP-ADV-LOCKED-1794935830 is PREPARED with funds locked
+quote q-TP-ADV-CAPTURED-1794935830-1794935904541 at 227431/10000 (0bps): 110000 AED -> implied 2501741, using 2501741 INR
+TP-ADV-CAPTURED-1794935830 is CAPTURED
+
+── The rate
+quote q-TP-ADV-FORGE-1794935830-1794935912672 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR [SIGNED BY A KEY THE CHAIN DOES NOT KNOW]
+  refused  [T10.1.1] a rate signed by a key the chain does not know
+quote q-TP-ADV-STALE-1794935830-1794935912794 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+  refused  [T10.1.2] yesterday's rate, correctly signed
+quote q-TP-ADV-MISMATCH-1794935830-1794935912908 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 9000000 INR
+  refused  [T10.1.3] a genuine quote attached to legs that contradict it
+quote q-adv-reuse-1794935830 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+quote q-adv-reuse-1794935830 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+  refused  [T10.1.6] spending one dealt quote twice
+  refused  [T10.1.9] a party installing its own trusted signing key
+
+── The beneficiary
+quote q-TP-ADV-UNSCR-1794935830-1794935921440 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+  refused  [T10.2.1] locking funds for a beneficiary nobody screened
+  refused  [T10.2.4] a party clearing its own beneficiary
+  refused  [T10.2.5] a party revoking somebody else's attestation
+
+── Settlement integrity
+  refused  [T1.1   ] committing a transfer that was never prepared
+  refused  [T1.2   ] locking the counterparty's funds before it accepts
+quote q-TP-ADV-LOCKED-1794935830-1794935937964 at 227431/10000 (0bps): 220000 AED -> implied 5003482, using 5003482 INR
+  refused  [T1.3   ] replaying a transfer ID
+  refused  [T1.4   ] unilaterally aborting a prepared transfer before it expires
+  payer has 724458500 AED available; attempting 362230250 twice
+quote q-TP-ADV-DBL-A-1794935830-1794935938268 at 227431/10000 (0bps): 362230250 AED -> implied 8238238798, using 8238238798 INR
+quote q-TP-ADV-DBL-B-1794935830-1794935954454 at 227431/10000 (0bps): 362230250 AED -> implied 8238238798, using 8238238798 INR
+  refused  [T1.5   ] spending the same balance twice
+quote q-TP-ADV-RESERVED-1794935830-1794935978980 at 227431/10000 (0bps): 1000 AED -> implied 22743, using 22743 INR
+  refused  [T1.6   ] naming the issuance account as the beneficiary
+
+── Authorisation and endorsement
+  refused  [T2.1   ] an org that is not a party settling somebody else's transfer
+  refused  [T2.2   ] a commit endorsed by one organisation only (still PREPARED)
+
+── Netting
+  refused  [T8.5   ] closing a window that is still accruing
+  refused  [T8.1   ] committing to a netting window without cover
+
+── Policy and maker-checker
+  refused  [T10.3.1] the proposer of a limit change approving it itself
+quote q-TP-ADV-OVERCAP-1794935830-1794936003903 at 227431/10000 (0bps): 500000 AED -> implied 11371550, using 11371550 INR
+  refused  [T10.3.4] a transfer above the agreed per-transfer limit
+  policy reset to unrestricted
+
+── Reads that must not be privileged
+  refused  [T10.2  ] asking about a beneficiary nobody screened
+
+── Conservation, after everything above
+  26 accounts folded
+  AED sums to 0   BALANCED
+  INR sums to 0   BALANCED
+
+── Summary
+21 of 21 attacks were refused, each for the reason it should have been.
+
+A_EXIT=0
