@@ -36,7 +36,7 @@ next one starts.
 | 7 | **Services (Node.js / TypeScript).** Gateway on the Fabric Gateway SDK with roles, FX oracle issuing signed quotes with expiry and slippage bound, simulated UPI / e₹ payout adapter, event listener, compliance service with an encrypted Postgres PII vault | 1–5 |
 | 8 | **AI agent (Python).** Quantile forecaster → optimiser trading idle-capital cost against shortfall cost → proposed actions submitted through the policy contract → on-ledger audit log. Optional LLM layer explains decisions in plain English and does nothing else | 3, P0.5 |
 | 9 | **Web (Next.js).** Sender app with total-cost quote and purpose rules, receiver view, treasury dashboard showing pool state and forecast versus actual with agent decisions and approvals, regulator view | 7 |
-| 10 | **Adversarial suite and benchmarks.** Double-spend, settle without attestation, forged and stale FX quote, agent exceeding limits, under-endorsed transaction — each must fail. Caliper for TPS and latency, k6 for API load. Measured numbers only | all |
+| 10 | ~~**Adversarial suite and benchmarks.**~~ **Suite built; benchmarks deliberately not — see below.** Double-spend, settle without attestation, forged and stale FX quote, agent exceeding limits, under-endorsed transaction — each must fail. Caliper for TPS and latency, k6 for API load. Measured numbers only | all |
 | 11 | **Deployment notes** for scaling with NPCI Falcon (Kubernetes / Helm) | 10 |
 
 ### Built ahead of the plan
@@ -94,6 +94,38 @@ What item 2 still owes:
   rather than its caller's, a transaction must satisfy both endorsement
   policies, and a caller cannot read back what the callee wrote — none of which
   is solved by moving the code.
+
+### Phase E: the adversarial suite, and the benchmark that is not here
+
+`network/adversarial.sh` runs every attack the ledger must refuse in one pass,
+each tagged with the threat it covers so a reader can go from the threat model
+to the thing that actually tries it. The discipline that makes it worth running
+is that a failed attack is not a passed test: each case names the message it
+expects, and a refusal from the wrong layer — a malformed argument, a
+channel-level rejection, a peer that happened to be down — is reported as a
+failure of the suite rather than a success.
+
+`scripts/truth-pass.sh` checks the README's own claims against the repository:
+test counts, coverage, every link, every script it tells you to run, that
+withdrawn claims stay withdrawn, that no throughput figure has crept in, and
+that no key material is tracked. Documentation drifts silently; this makes it
+fail loudly.
+
+**Caliper and k6 are not here, and that is a decision rather than an omission.**
+DRUNIX publishes amd64 images only, so on this machine every container runs
+emulated and any timing describes qemu rather than the ledger. A TPS number
+taken here would be worse than no number.
+
+What *can* be measured without a trustworthy clock is contention, because
+whether a transaction survives depends on the keys it touches rather than on
+how fast the hardware is. `network/measure-contention.sh` fires N transactions
+at once three ways — two-phase commit from one payer, netting from one
+institution, netting spread across institutions — and reports how many survive.
+That is the claim the README actually makes, and it is checkable here.
+
+Real throughput numbers need an amd64 Linux host. Until there is one, the
+honest position is the one taken throughout: measure what the machine can
+actually tell you, and say plainly what it cannot.
 
 ## Deferred beyond Phase 1
 

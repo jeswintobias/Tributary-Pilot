@@ -202,6 +202,8 @@ The chaincode is the write side and the authority. Around it:
 | `services/gateway` | HTTP API and the corridor view | peers, and the projection | peers |
 | `services/projector` — projector | replays chaincode events from a checkpoint | the Committing Peer | the read model and the outbox |
 | `services/projector` — worker | pays beneficiaries on the far rail | the outbox | payouts, dead letters |
+| `services/oracle` | signs FX quotes the chaincode verifies | its own key | nothing — it only signs |
+| `services/iso20022` | maps ledger state to standard payment messages | a transfer, on stdin | XML |
 
 The projector connects to the **Committing Peer**, not the Lite Peer. DRUNIX
 splits the peer in two and only the Committing Peer holds a ledger, so only it
@@ -223,6 +225,9 @@ each failure mode and the test that holds it down.
 
 - [SETTLEMENT_FLOW.md](SETTLEMENT_FLOW.md) — the 2PC sequence, the state machine, and netting
 - [PIPELINE.md](PIPELINE.md) — the projector, the queue and the payout worker
+- [CONTROLS.md](CONTROLS.md) — signed rates, attestations, policy, vouchers
+- [ISO20022.md](ISO20022.md) — ledger state as standard payment messages
+- [DRUNIX_RANGE_QUERY_BUG.md](DRUNIX_RANGE_QUERY_BUG.md) — a platform defect found here
 - [THREAT_MODEL.md](THREAT_MODEL.md) — threats mapped to controls and tests
 - [ASSUMPTIONS.md](ASSUMPTIONS.md) — synthetic data, cost and capital-savings models
 - [ROADMAP.md](ROADMAP.md) — Phase 1 order of work

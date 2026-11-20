@@ -4,6 +4,19 @@
 > says **Planned** where it does not. A control with a Planned test is a design
 > commitment, not a demonstrated property.
 
+## Running the threats as attacks
+
+Most rows below name a unit test. `network/adversarial.sh` runs the same
+threats against the **live network** in one pass, tagged with these IDs, and
+holds itself to a stricter rule than "the attack failed": each case names the
+message it expects, so a refusal produced by something other than the control
+under test is reported as a failure of the suite. A control nobody has watched
+fail is not a control.
+
+Coverage is not total — the suite runs what can be attacked from a CLI against
+a running channel. Threats about the service layer (T7), the projector (T9) and
+the platform (T6) are covered by their own tests and scripts instead.
+
 ## Scope and trust assumptions
 
 In scope: the settlement chaincode, the ledger state it owns, the endorsement

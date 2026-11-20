@@ -13,7 +13,7 @@ PlatformOrg as regulator observer — under an
 foreign-currency leg and its INR payout leg move atomically in one transaction —
 or neither does.
 
-Correctness is demonstrated, not asserted: 187 Go unit tests (76.8% statement
+Correctness is demonstrated, not asserted: 189 Go unit tests (76.8% statement
 coverage) cover commit-without-prepare, commit-after-expiry, replayed transfer
 IDs, double-spend via a second prepare, non-party callers and integer exactness
 at 2^53+1; on the live network, a `Commit` endorsed by only one organisation
@@ -66,10 +66,20 @@ netted pool needs 37% less buffer than separate per-provider buffers at matched
 1% shortfall risk, a modelled estimate under assumptions documented in
 `docs/ASSUMPTIONS.md`, not a real-world claim.
 
-Phase 1 adds the token, policy, attestation and payout contracts, pool deposits
-and withdrawals, the cross-ledger coordinator, the agent's optimiser behind the
-policy contract, the web applications and a Caliper benchmark; the repository's
-status table marks precisely what works today and what does not.
+Every attack the ledger must refuse is run against the live network in one
+suite — twenty-one of them, each asserted to fail for the stated reason, so
+that a refusal from the wrong layer counts as a failure rather than a pass —
+and ledger state maps to ISO 20022 so the work stays legible to a payments
+operator who has never read a line of chaincode. Building it surfaced a defect
+in DRUNIX itself: the SQL state database silently truncates every unpaginated
+range query at ten results, which makes any chaincode that folds a range
+compute a total over a partial read; it is diagnosed, worked around here, and
+written up with a compiling patch for upstream.
+
+Phase 1 adds the token contract, pool deposits and withdrawals, the
+cross-ledger coordinator, the agent's optimiser behind the policy contract and
+the web applications; the repository's status table marks precisely what works
+today and what does not.
 
 ---
 
@@ -111,6 +121,17 @@ the repository does not support them.
   ledger holds them accountable for having said so and cannot know whether they
   looked. Screening is per-beneficiary rather than per-transaction, and a
   salted hash is only as private as its salt.
+- Not any throughput number, still. What is measured instead is contention,
+  because whether a transaction survives depends on the keys it touches rather
+  than on how fast the hardware is — six concurrent transactions across two
+  institutions get two through, which is the design's own prediction and also
+  its limit.
+- Not "ISO 20022 compliant". The messages are produced and structurally
+  checked, never validated against the normative schemas, which are licensed
+  and not in the repository. They are also commercially incomplete by design:
+  every personal-data field is empty because the ledger holds a salted hash,
+  and a real sender would fill those from its own vault rather than from the
+  chain.
 - Not "the oracle is trustworthy". Anyone holding its private key can sign any
   rate and the chaincode will believe it. The key is generated on first use,
   written 0600 and never committed, and it belongs in an HSM. The set of
