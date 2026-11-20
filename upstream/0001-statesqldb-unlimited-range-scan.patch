@@ -1,0 +1,48 @@
+diff --git a/core/ledger/kvledger/txmgmt/statedb/statesqldb/statesqldb.go b/core/ledger/kvledger/txmgmt/statedb/statesqldb/statesqldb.go
+index d7cdc25..04661fb 100644
+--- a/core/ledger/kvledger/txmgmt/statedb/statesqldb/statesqldb.go
++++ b/core/ledger/kvledger/txmgmt/statedb/statesqldb/statesqldb.go
+@@ -219,7 +219,10 @@ func (db *versionedDB) GetStateMultipleKeys(namespace string, keys []string) ([]
+ }
+ 
+ func (db *versionedDB) GetStateRangeScanIterator(namespace string, startKey string, endKey string) (statedb.ResultsIterator, error) {
+-	return db.GetStateRangeScanIteratorWithPagination(namespace, startKey, endKey, 10)
++	// pageSize = 0 denotes unlimited page size, matching stateleveldb and
++	// statecouchdb. Passing a fixed size here silently truncated every
++	// unpaginated range query in chaincode to that many results.
++	return db.GetStateRangeScanIteratorWithPagination(namespace, startKey, endKey, 0)
+ }
+ func (db *versionedDB) GetStateRangeScanIteratorWithPagination(namespace string, startKey string, endKey string, pageSize int32) (statedb.QueryResultsIterator, error) {
+ 
+@@ -233,7 +236,8 @@ func (db *versionedDB) GetStateRangeScanIteratorWithPagination(namespace string,
+ }
+ 
+ func (db *versionedDB) ExecuteQuery(namespace, query string) (statedb.ResultsIterator, error) {
+-	return db.newSqlExecuter(namespace, query, "", 10), nil
++	// pageSize = 0 denotes unlimited page size. See GetStateRangeScanIterator.
++	return db.newSqlExecuter(namespace, query, "", 0), nil
+ }
+ 
+ func (db *versionedDB) ExecuteQueryWithPagination(namespace, query, bookmark string, pageSize int32) (statedb.QueryResultsIterator, error) {
+@@ -458,7 +462,10 @@ func (db *versionedDB) newSqlScanner(compositeKey string, cursor int, pageSize i
+ 
+ func (s *SqlScanner) Next() (*statedb.VersionedKV, error) {
+ 
+-	if s.Cursor >= s.PageSize {
++	// A page size of zero means unlimited, as it does for the other state
++	// database implementations. Without this check the sentinel would stop
++	// the scan before its first row rather than letting it run to the end.
++	if s.PageSize > 0 && s.Cursor >= s.PageSize {
+ 		return nil, nil
+ 	}
+ 
+@@ -523,7 +530,8 @@ func (db *versionedDB) newSqlExecuter(namespace string, query string, bookmark s
+ 
+ func (s *SqlExecuter) Next() (*statedb.VersionedKV, error) {
+ 
+-	if s.Cursor >= s.PageSize {
++	// A page size of zero means unlimited. See SqlScanner.Next.
++	if s.PageSize > 0 && s.Cursor >= s.PageSize {
+ 		return nil, nil
+ 	}
+ 
