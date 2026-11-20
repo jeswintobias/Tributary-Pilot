@@ -14,7 +14,7 @@ const (
 
 // setPolicy puts a policy into effect through the real maker-checker path:
 // proposed by one organisation, approved by another.
-func setPolicy(t *testing.T, l *ledger, p Policy) {
+func setPolicy(t *testing.T, l *ledger, p PolicyTerms) {
 	t.Helper()
 	var proposalID string
 	if err := l.invoke(policyMaker, func(c contractCtx) error {
@@ -42,7 +42,7 @@ func TestPolicy_ProposerCannotApproveItsOwnChange(t *testing.T) {
 	var proposalID string
 	if err := l.invoke(policyMaker, func(c contractCtx) error {
 		var err error
-		proposalID, err = l.sc.ProposePolicy(c, Policy{
+		proposalID, err = l.sc.ProposePolicy(c, PolicyTerms{
 			MaxSingleTransfer: map[string]uint64{aed: 1},
 		})
 		return err
@@ -67,7 +67,7 @@ func TestPolicy_ProposerCannotApproveItsOwnChange(t *testing.T) {
 
 func TestPolicy_ADifferentOrgCanApprove(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{MaxSingleTransfer: map[string]uint64{aed: 500_000}})
+	setPolicy(t, l, PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: 500_000}})
 
 	p, err := l.sc.GetPolicy(l.as(senderOrg))
 	if err != nil {
@@ -88,7 +88,7 @@ func TestPolicy_ADifferentOrgCanApprove(t *testing.T) {
 func TestPolicy_OnlyAnAdminOrgMayPropose(t *testing.T) {
 	l := fundedLedger(t)
 	err := l.invoke("OutsiderMSP", func(c contractCtx) error {
-		_, err := l.sc.ProposePolicy(c, Policy{})
+		_, err := l.sc.ProposePolicy(c, PolicyTerms{})
 		return err
 	})
 	requireErrContains(t, err, "may not propose policy")
@@ -105,19 +105,18 @@ func TestPolicy_ApprovingAnUnknownProposalIsRefused(t *testing.T) {
 // The proposal is keyed by the hash of its contents, so an approver approves
 // exactly what was proposed and not whatever is sitting under that ID later.
 func TestPolicy_ProposalIDIsTheHashOfItsContents(t *testing.T) {
-	a := Policy{MaxSingleTransfer: map[string]uint64{aed: 100}}
-	b := Policy{MaxSingleTransfer: map[string]uint64{aed: 101}}
+	a := PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: 100}}
+	b := PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: 101}}
 	if policyHash(a) == policyHash(b) {
 		t.Fatal("two different policies hash the same, so an approval could be redirected")
 	}
 
-	// Fields set at activation are not part of what is agreed to.
-	withMeta := a
-	withMeta.Version = 9
-	withMeta.ActivedAt = 123
-	withMeta.ApprovedBy = "SomeoneMSP"
-	if policyHash(a) != policyHash(withMeta) {
-		t.Error("activation metadata changes the hash, so a proposal could never be approved")
+	// Activation metadata lives outside PolicyTerms entirely now, so it
+	// cannot reach the hash even by accident. Pinned anyway: the hash of a
+	// policy's terms must equal the hash of those terms on their own.
+	activated := Policy{PolicyTerms: a, Version: 9, ActivatedAt: 123, ApprovedBy: "SomeoneMSP"}
+	if policyHash(a) != policyHash(activated.PolicyTerms) {
+		t.Error("activation metadata reached the hash, so a proposal could never be approved")
 	}
 }
 
@@ -125,7 +124,7 @@ func TestPolicy_ProposalIDIsTheHashOfItsContents(t *testing.T) {
 // would give each endorsing peer a different proposal ID and nothing would
 // ever be approvable.
 func TestPolicy_HashIsDeterministicAcrossMapOrder(t *testing.T) {
-	p := Policy{
+	p := PolicyTerms{
 		MaxSingleTransfer: map[string]uint64{"AED": 1, "INR": 2, "USD": 3, "EUR": 4, "GBP": 5},
 		MaxObligation:     map[string]uint64{"AED": 9, "INR": 8, "USD": 7},
 		ApprovedMembers:   []string{"Org2MSP", "Org1MSP", "Org3MSP"},
@@ -139,8 +138,8 @@ func TestPolicy_HashIsDeterministicAcrossMapOrder(t *testing.T) {
 }
 
 func TestPolicy_MemberOrderDoesNotChangeTheHash(t *testing.T) {
-	a := Policy{ApprovedMembers: []string{"Org1MSP", "Org2MSP"}}
-	b := Policy{ApprovedMembers: []string{"Org2MSP", "Org1MSP"}}
+	a := PolicyTerms{ApprovedMembers: []string{"Org1MSP", "Org2MSP"}}
+	b := PolicyTerms{ApprovedMembers: []string{"Org2MSP", "Org1MSP"}}
 	if policyHash(a) != policyHash(b) {
 		t.Error("the same member set in a different order hashes differently")
 	}
@@ -152,7 +151,7 @@ func TestPolicy_MemberOrderDoesNotChangeTheHash(t *testing.T) {
 
 func TestPolicy_CapsASingleTransfer(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{MaxSingleTransfer: map[string]uint64{aed: senderLeg}})
+	setPolicy(t, l, PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: senderLeg}})
 
 	if err := l.create(senderOrg, "TP-AT-LIMIT", senderLeg, aed, payoutLeg, inr,
 		"Q-1", expiresAt, payoutOrg, payeeRef); err != nil {
@@ -166,7 +165,7 @@ func TestPolicy_CapsASingleTransfer(t *testing.T) {
 
 func TestPolicy_CapIsPerCurrency(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{MaxSingleTransfer: map[string]uint64{"USD": 1}})
+	setPolicy(t, l, PolicyTerms{MaxSingleTransfer: map[string]uint64{"USD": 1}})
 
 	// The cap is on USD; an AED transfer is untouched by it.
 	if err := l.create(senderOrg, "TP-AED", senderLeg, aed, payoutLeg, inr,
@@ -177,7 +176,7 @@ func TestPolicy_CapIsPerCurrency(t *testing.T) {
 
 func TestPolicy_RestrictsWhoMayBeAParty(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{ApprovedMembers: []string{senderOrg}})
+	setPolicy(t, l, PolicyTerms{ApprovedMembers: []string{senderOrg}})
 
 	requireErrContains(t,
 		l.create(senderOrg, "TP-1", senderLeg, aed, payoutLeg, inr,
@@ -187,7 +186,7 @@ func TestPolicy_RestrictsWhoMayBeAParty(t *testing.T) {
 
 func TestPolicy_EmptyMemberListMeansEveryone(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{MaxSingleTransfer: map[string]uint64{aed: 10_000_000}})
+	setPolicy(t, l, PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: 10_000_000}})
 
 	if err := l.create(senderOrg, "TP-1", senderLeg, aed, payoutLeg, inr,
 		"Q-1", expiresAt, payoutOrg, payeeRef); err != nil {
@@ -197,7 +196,7 @@ func TestPolicy_EmptyMemberListMeansEveryone(t *testing.T) {
 
 func TestPolicy_FloorsTheSettlementWindow(t *testing.T) {
 	l := fundedLedger(t)
-	setPolicy(t, l, Policy{MinSettlementWindowSeconds: 600})
+	setPolicy(t, l, PolicyTerms{MinSettlementWindowSeconds: 600})
 
 	requireErrContains(t,
 		l.create(senderOrg, "TP-RUSH", senderLeg, aed, payoutLeg, inr,
@@ -210,7 +209,7 @@ func TestPolicy_CapsANettingObligation(t *testing.T) {
 	if err := l.seed(senderOrg, aed, 10_000_000); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	setPolicy(t, l, Policy{MaxObligation: map[string]uint64{aed: 100_000}})
+	setPolicy(t, l, PolicyTerms{MaxObligation: map[string]uint64{aed: 100_000}})
 
 	if err := l.submit(senderOrg, "OB-OK", payoutOrg, aed, 100_000); err != nil {
 		t.Fatalf("an obligation at the limit should be allowed: %v", err)
@@ -244,7 +243,7 @@ func TestPolicy_UnsetImposesNothing(t *testing.T) {
 func TestPolicy_RefusesAnUnsatisfiableWindow(t *testing.T) {
 	l := fundedLedger(t)
 	err := l.invoke(policyMaker, func(c contractCtx) error {
-		_, err := l.sc.ProposePolicy(c, Policy{
+		_, err := l.sc.ProposePolicy(c, PolicyTerms{
 			MinSettlementWindowSeconds: MaxSettlementWindowSeconds + 1,
 		})
 		return err
@@ -255,7 +254,7 @@ func TestPolicy_RefusesAnUnsatisfiableWindow(t *testing.T) {
 func TestPolicy_RefusesAMalformedCurrency(t *testing.T) {
 	l := fundedLedger(t)
 	err := l.invoke(policyMaker, func(c contractCtx) error {
-		_, err := l.sc.ProposePolicy(c, Policy{
+		_, err := l.sc.ProposePolicy(c, PolicyTerms{
 			MaxSingleTransfer: map[string]uint64{"rupees": 1},
 		})
 		return err
@@ -265,7 +264,7 @@ func TestPolicy_RefusesAMalformedCurrency(t *testing.T) {
 
 func TestPolicy_ApprovalConsumesTheProposal(t *testing.T) {
 	l := fundedLedger(t)
-	policy := Policy{MaxSingleTransfer: map[string]uint64{aed: 1_000_000}}
+	policy := PolicyTerms{MaxSingleTransfer: map[string]uint64{aed: 1_000_000}}
 
 	var proposalID string
 	if err := l.invoke(policyMaker, func(c contractCtx) error {

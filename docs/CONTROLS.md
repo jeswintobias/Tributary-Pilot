@@ -288,3 +288,51 @@ beneficiaries.
 - **Policy has no daily or cumulative limits**, only per-transfer caps. A
   velocity limit needs a windowed counter, which is a shared key and would need
   the treatment the netting path got.
+
+---
+
+## 7. Found by deploying, not by testing
+
+Two defects reached the live network after passing every unit test, and both
+are worth recording because the same blind spot produces both.
+
+**The unit tests call the contract's Go methods directly.** The peer does not.
+It goes through the contract API, which derives a JSON schema from each
+parameter type and validates arguments against it before the method is
+reached. Everything that layer does is invisible to a test that skips it.
+
+`ProposePolicy` originally took the stored `Policy` type, whose fields include
+`version`, `activatedAt`, `proposedBy` and `approvedBy` — set when a change is
+activated, not when it is proposed. The generated schema marked them required,
+so the live network answered:
+
+```
+value did not match schema:
+1. param0: activatedAt is required
+2. param0: approvedBy is required
+3. param0: proposedBy is required
+4. param0: version is required
+```
+
+The fix is a type split: `PolicyTerms` is what a proposer supplies, `Policy` is
+that embedded with the record of who put it in force. The hash covers the terms
+only, which it did before — the split just makes that explicit instead of
+implicit.
+
+`TestInputTypes_CarryNoFieldsOnlyTheContractFillsIn` pins it. Adding an
+activation field back to `PolicyTerms` compiles, and fails that test.
+
+Recorded honestly: `[]VoucherSplit` is also an input and *does* carry fields
+filled in later — `redeemed`, `redeemedAt`, `redeemedBy` — and it was accepted
+on the live network. Why a slice of structs behaves differently from a struct
+has not been established, so nothing asserts a rule about it. The Policy case
+is the one that is known.
+
+**The second was not ours at all** — DRUNIX silently truncating range queries
+at ten results, which made a conservation check report a false imbalance. That
+one has its own write-up in
+[DRUNIX_RANGE_QUERY_BUG.md](DRUNIX_RANGE_QUERY_BUG.md).
+
+The lesson both share: a test that is kinder than the platform is how a real
+defect ships. The mock now reproduces the truncation deliberately, and the
+metadata guard covers the schema layer the mock cannot.

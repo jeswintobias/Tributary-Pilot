@@ -57,12 +57,22 @@ var PolicyAdminMSPs = map[string]bool{
 // and they must differ — see ApprovePolicy.
 const MinPolicyApprovers = 2
 
-// Policy is the operating envelope.
+// PolicyTerms is what an organisation proposes: the limits themselves, and
+// nothing about who put them there.
+//
+// Separate from Policy for two reasons. The honest one is that these are the
+// only fields a proposer decides, and the rest are set at activation — a
+// proposer supplying its own version number or approver would be nonsense.
+// The practical one, found only on the live network: the contract API
+// generates an input schema from the parameter type and requires every field
+// in it, so a single struct made a caller supply "approvedBy" before anybody
+// had approved anything. Unit tests never saw it, because they call the Go
+// function directly and never go through that schema.
 //
 // A zero value means "no limit", so a channel with no policy behaves exactly
 // as it did before one existed. That is deliberate: a policy mechanism that
 // bricks the system when unset is a policy mechanism nobody dares deploy.
-type Policy struct {
+type PolicyTerms struct {
 	// MaxSingleTransfer caps one transfer's sender leg, per currency, in minor
 	// units. Absent or zero means no cap for that currency.
 	MaxSingleTransfer map[string]uint64 `json:"maxSingleTransfer"`
@@ -78,19 +88,29 @@ type Policy struct {
 	// settle. The contract already caps it; this stops a transfer being
 	// created with so short a window that the counterparty cannot act.
 	MinSettlementWindowSeconds int64 `json:"minSettlementWindowSeconds"`
+}
 
-	Version    int64  `json:"version"`
-	ActivedAt  int64  `json:"activatedAt"`
-	ProposedBy string `json:"proposedBy"`
-	ApprovedBy string `json:"approvedBy"`
+// Policy is a set of terms in force, with the record of who put them there.
+//
+// The activation fields sit outside PolicyTerms and outside the hash: they are
+// not part of what two organisations agreed to, and hashing them would make a
+// proposal impossible to approve, since its hash would change the moment it
+// was activated.
+type Policy struct {
+	PolicyTerms
+
+	Version     int64  `json:"version"`
+	ActivatedAt int64  `json:"activatedAt"`
+	ProposedBy  string `json:"proposedBy"`
+	ApprovedBy  string `json:"approvedBy"`
 }
 
 // PolicyProposal is a change waiting for its second signature.
 type PolicyProposal struct {
-	ProposalID string `json:"proposalID"` // hash of the proposed policy
-	Policy     Policy `json:"policy"`
-	ProposedBy string `json:"proposedBy"`
-	ProposedAt int64  `json:"proposedAt"`
+	ProposalID string      `json:"proposalID"` // hash of the proposed terms
+	Terms      PolicyTerms `json:"terms"`
+	ProposedBy string      `json:"proposedBy"`
+	ProposedAt int64       `json:"proposedAt"`
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +123,7 @@ type PolicyProposal struct {
 // is what makes this maker-checker rather than a two-step form.
 func (s *SmartContract) ProposePolicy(
 	ctx contractapi.TransactionContextInterface,
-	policy Policy,
+	terms PolicyTerms,
 ) (string, error) {
 	mspID, err := callerMSPID(ctx)
 	if err != nil {
@@ -112,7 +132,7 @@ func (s *SmartContract) ProposePolicy(
 	if !PolicyAdminMSPs[mspID] {
 		return "", fmt.Errorf("%s may not propose policy", mspID)
 	}
-	if err := validatePolicy(policy); err != nil {
+	if err := validatePolicy(terms); err != nil {
 		return "", err
 	}
 	now, err := txTime(ctx)
@@ -122,7 +142,7 @@ func (s *SmartContract) ProposePolicy(
 
 	// The ID is the hash of the contents, so an approver cannot be made to
 	// approve something other than what was proposed.
-	proposalID := policyHash(policy)
+	proposalID := policyHash(terms)
 	key, err := ctx.GetStub().CreateCompositeKey(proposalKeyPrefix, []string{proposalID})
 	if err != nil {
 		return "", fmt.Errorf("build proposal key: %w", err)
@@ -136,7 +156,7 @@ func (s *SmartContract) ProposePolicy(
 	}
 
 	raw, err := json.Marshal(PolicyProposal{
-		ProposalID: proposalID, Policy: policy,
+		ProposalID: proposalID, Terms: terms,
 		ProposedBy: mspID, ProposedAt: now,
 	})
 	if err != nil {
@@ -193,7 +213,7 @@ func (s *SmartContract) ApprovePolicy(
 	// cannot fail through the public API, and is checked anyway because the
 	// whole value of hashing the proposal is that nobody has to trust it did
 	// not change.
-	if policyHash(proposal.Policy) != proposalID {
+	if policyHash(proposal.Terms) != proposalID {
 		return fmt.Errorf("proposal %q does not match its own hash", proposalID)
 	}
 
@@ -206,9 +226,9 @@ func (s *SmartContract) ApprovePolicy(
 		return err
 	}
 
-	next := proposal.Policy
+	next := Policy{PolicyTerms: proposal.Terms}
 	next.Version = current.Version + 1
-	next.ActivedAt = now
+	next.ActivatedAt = now
 	next.ProposedBy = proposal.ProposedBy
 	next.ApprovedBy = mspID
 
@@ -358,7 +378,7 @@ func activePolicy(ctx contractapi.TransactionContextInterface) (Policy, error) {
 	return p, nil
 }
 
-func validatePolicy(p Policy) error {
+func validatePolicy(p PolicyTerms) error {
 	for ccy := range p.MaxSingleTransfer {
 		if err := requireCcy("maxSingleTransfer currency", ccy); err != nil {
 			return err
@@ -394,7 +414,7 @@ func validatePolicy(p Policy) error {
 //
 // Fields set at activation — version, timestamps, who proposed and approved —
 // are excluded, because they are not part of what is being agreed to.
-func policyHash(p Policy) string {
+func policyHash(p PolicyTerms) string {
 	h := sha256.New()
 	write := func(s string) {
 		h.Write([]byte(strconv.Itoa(len(s))))
